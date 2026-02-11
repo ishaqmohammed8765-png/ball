@@ -153,8 +153,17 @@ function resolveInitialOverlaps(balls) {
         const b = balls[j];
         const dx = b.x - a.x;
         const dy = b.y - a.y;
-        const { x: nx, y: ny, length: distance } = normalize(dx, dy);
+        const norm = normalize(dx, dy);
+        let nx = norm.x;
+        let ny = norm.y;
+        let distance = norm.length;
         const minDistance = a.radius + b.radius;
+        if (distance <= EPSILON) {
+          const fallback = getDeterministicFallbackDirection(Math.min(a.id, b.id));
+          nx = fallback.x;
+          ny = fallback.y;
+          distance = 0;
+        }
         if (distance + EPSILON < minDistance) {
           changed = true;
           const overlap = minDistance - distance;
@@ -408,9 +417,6 @@ export class ArenaSimulation {
     const cfg = this.config;
     const dt = cfg.fixedDt;
 
-    // Determinism: every step starts from a stable id order.
-    this.balls.sort((a, b) => a.id - b.id);
-
     for (const ball of this.balls) {
       if (ball.cooldown > 0) ball.cooldown = Math.max(0, ball.cooldown - dt);
       if (ball.shieldTimer > 0) ball.shieldTimer = Math.max(0, ball.shieldTimer - dt);
@@ -438,31 +444,19 @@ export class ArenaSimulation {
         const dy = b.y - a.y;
         const minDistance = a.radius + b.radius;
         if ((dx * dx) + (dy * dy) <= (minDistance * minDistance)) {
-          pairs.push([a.id, b.id]);
+          pairs.push([i, j]);
         }
       }
     }
 
-    // Determinism: resolve collisions in a canonical (minId, maxId) order.
-    pairs.sort((lhs, rhs) => {
-      if (lhs[0] !== rhs[0]) return lhs[0] - rhs[0];
-      return lhs[1] - rhs[1];
-    });
-
-    const byId = new Map();
-    for (const ball of this.balls) {
-      byId.set(ball.id, ball);
-    }
-
-    for (const [idA, idB] of pairs) {
-      const a = byId.get(idA);
-      const b = byId.get(idB);
+    for (const [indexA, indexB] of pairs) {
+      const a = this.balls[indexA];
+      const b = this.balls[indexB];
       if (!a || !b) continue;
       if (a.hp <= 0 || b.hp <= 0) continue;
       resolveCollisionPair(a, b, cfg);
     }
 
-    this.balls.sort((a, b) => a.id - b.id);
     this.balls = this.balls.filter((ball) => ball.hp > 0);
 
     for (const ball of this.balls) {

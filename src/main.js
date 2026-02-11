@@ -12,6 +12,7 @@ const sim = new ArenaSimulation();
 const fixedDtMs = sim.config.fixedDt * 1000;
 const normalStepsPerFrame = 1;
 const fastStepsPerFrame = 8;
+const maxFixedUpdatesPerFrame = 12;
 let stepsPerFrame = normalStepsPerFrame;
 let accumulatorMs = 0;
 let lastTimestamp = performance.now();
@@ -88,9 +89,16 @@ function frame(now) {
   lastTimestamp = now;
   accumulatorMs += elapsed;
 
-  while (accumulatorMs >= fixedDtMs) {
+  let updateCount = 0;
+  while (accumulatorMs >= fixedDtMs && updateCount < maxFixedUpdatesPerFrame) {
     sim.stepMany(stepsPerFrame);
     accumulatorMs -= fixedDtMs;
+    updateCount += 1;
+  }
+
+  if (accumulatorMs >= fixedDtMs) {
+    // Drop stale accumulated time so the render loop does not spiral under load.
+    accumulatorMs %= fixedDtMs;
   }
 
   render();
