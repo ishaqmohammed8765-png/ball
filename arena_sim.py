@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
-from math import sqrt
+from math import pi, sin, sqrt
 from typing import Dict, List, Tuple
 
 
@@ -51,11 +51,24 @@ class SimConfig:
     relative_damage_scale: float = 0.08
     min_damage: float = 2.0
     max_damage: float = 30.0
+    damage_ramp_per_second: float = 0.02
+    max_time_damage_bonus: float = 1.25
+    damage_stack_gain_per_hit: float = 0.09
+    max_damage_stack: float = 1.8
+    damage_stack_decay_per_second: float = 0.04
+    fairness_hp_gap_scale: float = 0.4
+    fairness_min_multiplier: float = 0.8
+    fairness_max_multiplier: float = 1.25
     shield_cooldown_seconds: float = 2.0
     dash_cooldown_seconds: float = 2.5
     dash_speed: float = 320.0
     slow_duration_seconds: float = 1.5
     slow_multiplier: float = 0.6
+    core_hazard_start_seconds: float = 18.0
+    core_hazard_base_radius: float = 56.0
+    core_hazard_pulse_amplitude: float = 24.0
+    core_hazard_pulse_frequency: float = 1.4
+    core_hazard_dps: float = 13.0
     tank_hp_multiplier: float = 1.5
     tank_speed_multiplier: float = 0.8
     spiky_outgoing_multiplier: float = 1.3
@@ -76,6 +89,7 @@ class Ball:
     hp: float
     max_hp: float
     max_speed: float
+    damage_stack: float
     ability_type: AbilityType
     cooldown: float = 0.0
     shield_timer: float = 0.0
@@ -125,6 +139,7 @@ def apply_quantization(ball: Ball) -> None:
     ball.hp = quantize(ball.hp)
     ball.max_hp = quantize(ball.max_hp)
     ball.max_speed = quantize(ball.max_speed)
+    ball.damage_stack = quantize(ball.damage_stack)
     ball.cooldown = quantize(ball.cooldown)
     ball.shield_timer = quantize(ball.shield_timer)
     ball.slow_timer = quantize(ball.slow_timer)
@@ -185,6 +200,7 @@ def create_ball_base(
         hp=max_hp,
         max_hp=max_hp,
         max_speed=max_speed,
+        damage_stack=0.0,
         ability_type=ability,
     )
     limit_velocity(ball, min(cfg.speed_clamp, ball.max_speed))
@@ -220,11 +236,18 @@ def resolve_initial_overlaps(balls: List[Ball]) -> None:
 
 def create_initial_balls(cfg: SimConfig) -> List[Ball]:
     balls: List[Ball] = []
-    columns = 6
-    spacing_x = 140.0
-    spacing_y = 120.0
-    start_x = 170.0
-    start_y = 140.0
+    padding = cfg.ball_radius + 24.0
+    usable_width = max(0.0, cfg.arena_width - (padding * 2.0))
+    usable_height = max(0.0, cfg.arena_height - (padding * 2.0))
+    aspect = cfg.arena_width / max(1.0, cfg.arena_height)
+    columns = max(1, int((cfg.ball_count * aspect) ** 0.5))
+    while columns * columns < cfg.ball_count * aspect:
+        columns += 1
+    rows = max(1, (cfg.ball_count + columns - 1) // columns)
+    spacing_x = (usable_width / (columns - 1)) if columns > 1 else 0.0
+    spacing_y = (usable_height / (rows - 1)) if rows > 1 else 0.0
+    start_x = padding
+    start_y = padding
 
     for ball_id in range(cfg.ball_count):
         row = ball_id // columns
@@ -293,8 +316,54 @@ class ArenaSimulation:
         rvx = a.vx - b.vx
         rvy = a.vy - b.vy
         relative_speed_along_normal = max(0.0, (rvx * nx) + (rvy * ny))
-        raw = cfg.base_damage + (cfg.relative_damage_scale * relative_speed_along_normal)
-        return clamp(raw, cfg.min_damage, cfg.max_damage)
+        return cfg.base_damage + (cfg.relative_damage_scale * relative_speed_along_normal)
+
+    def _time_damage_multiplier(self) -> float:
+        cfg = self.config
+        return 1.0 + min(cfg.max_time_damage_bonus, cfg.damage_ramp_per_second * self.time)
+
+    def _fairness_multiplier(self, attacker: Ball, defender: Ball) -> float:
+        cfg = self.config
+        attacker_hp_pct = attacker.hp / attacker.max_hp if attacker.max_hp > EPSILON else 0.0
+        defender_hp_pct = defender.hp / defender.max_hp if defender.max_hp > EPSILON else 0.0
+        hp_gap = defender_hp_pct - attacker_hp_pct
+        raw = 1.0 + (hp_gap * cfg.fairness_hp_gap_scale)
+        return clamp(raw, cfg.fairness_min_multiplier, cfg.fairness_max_multiplier)
+
+    def _damage_stack_multiplier(self, ball: Ball) -> float:
+        return 1.0 + clamp(ball.damage_stack, 0.0, self.config.max_damage_stack)
+
+    def _gain_damage_stack(self, ball: Ball, dealt_damage: float) -> None:
+        if dealt_damage <= EPSILON:
+            return
+        cfg = self.config
+        gain = cfg.damage_stack_gain_per_hit * (dealt_damage / max(cfg.base_damage, EPSILON))
+        ball.damage_stack = clamp(ball.damage_stack + gain, 0.0, cfg.max_damage_stack)
+
+    def _decay_damage_stack(self, ball: Ball, dt: float) -> None:
+        if ball.damage_stack <= EPSILON:
+            return
+        ball.damage_stack = max(0.0, ball.damage_stack - (self.config.damage_stack_decay_per_second * dt))
+
+    def _core_hazard_radius(self) -> float:
+        cfg = self.config
+        if self.time < cfg.core_hazard_start_seconds:
+            return 0.0
+        hazard_time = self.time - cfg.core_hazard_start_seconds
+        # Deterministic pulsing center hazard to force late-game engagement.
+        pulse = (sin(hazard_time * cfg.core_hazard_pulse_frequency * 2.0 * pi) + 1.0) * 0.5
+        return cfg.core_hazard_base_radius + (cfg.core_hazard_pulse_amplitude * pulse)
+
+    def _apply_core_hazard(self, ball: Ball, dt: float) -> None:
+        radius = self._core_hazard_radius()
+        if radius <= EPSILON:
+            return
+        center_x = self.config.arena_width * 0.5
+        center_y = self.config.arena_height * 0.5
+        dx = ball.x - center_x
+        dy = ball.y - center_y
+        if (dx * dx) + (dy * dy) <= (radius * radius):
+            ball.hp -= self.config.core_hazard_dps * dt
 
     def _outgoing_multiplier(self, ball: Ball) -> float:
         if ball.ability_type == AbilityType.SPIKY:
@@ -332,10 +401,25 @@ class ArenaSimulation:
         ball.hp = min(ball.max_hp, ball.hp + heal)
 
     def _apply_collision_damage(self, a: Ball, b: Ball, nx: float, ny: float) -> None:
-        base = self._base_collision_damage(a, b, nx, ny)
+        time_multiplier = self._time_damage_multiplier()
+        raw = self._base_collision_damage(a, b, nx, ny)
+        scaled = raw * time_multiplier
+        base = clamp(scaled, self.config.min_damage, self.config.max_damage * time_multiplier)
 
-        damage_to_b = base * self._outgoing_multiplier(a) * self._incoming_multiplier(b)
-        damage_to_a = base * self._outgoing_multiplier(b) * self._incoming_multiplier(a)
+        damage_to_b = (
+            base
+            * self._outgoing_multiplier(a)
+            * self._incoming_multiplier(b)
+            * self._damage_stack_multiplier(a)
+            * self._fairness_multiplier(a, b)
+        )
+        damage_to_a = (
+            base
+            * self._outgoing_multiplier(b)
+            * self._incoming_multiplier(a)
+            * self._damage_stack_multiplier(b)
+            * self._fairness_multiplier(b, a)
+        )
 
         damage_to_b = self._apply_shield(b, damage_to_b)
         damage_to_a = self._apply_shield(a, damage_to_a)
@@ -345,6 +429,8 @@ class ArenaSimulation:
 
         self._apply_vampiric(a, damage_to_b)
         self._apply_vampiric(b, damage_to_a)
+        self._gain_damage_stack(a, damage_to_b)
+        self._gain_damage_stack(b, damage_to_a)
 
         self._apply_slow_on_hit(a, b)
         self._apply_slow_on_hit(b, a)
@@ -407,6 +493,7 @@ class ArenaSimulation:
                 ball.shield_timer = max(0.0, ball.shield_timer - dt)
             if ball.slow_timer > 0.0:
                 ball.slow_timer = max(0.0, ball.slow_timer - dt)
+            self._decay_damage_stack(ball, dt)
 
             self._apply_dash(ball)
 
@@ -438,6 +525,11 @@ class ArenaSimulation:
                 continue
             self._resolve_collision_pair(a, b)
 
+        for ball in self.balls:
+            if ball.hp <= 0.0:
+                continue
+            self._apply_core_hazard(ball, dt)
+
         self.balls = [ball for ball in self.balls if ball.hp > 0.0]
 
         for ball in self.balls:
@@ -467,6 +559,7 @@ class ArenaSimulation:
                     "vy": ball.vy,
                     "hp": ball.hp,
                     "max_hp": ball.max_hp,
+                    "damage_stack": ball.damage_stack,
                     "radius": ball.radius,
                     "ability_type": ball.ability_type,
                 }
@@ -482,7 +575,7 @@ class ArenaSimulation:
             digest.update(
                 (
                     f"{ball.id}|{ball.x:.6f}|{ball.y:.6f}|{ball.vx:.6f}|{ball.vy:.6f}|{ball.hp:.6f}|"
-                    f"{ball.max_hp:.6f}\n"
+                    f"{ball.max_hp:.6f}|{ball.damage_stack:.6f}\n"
                 ).encode("ascii")
             )
 

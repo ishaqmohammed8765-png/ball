@@ -70,11 +70,24 @@ const DEFAULT_CONFIG = Object.freeze({
   relativeDamageScale: 0.08,
   minDamage: 2,
   maxDamage: 30,
+  damageRampPerSecond: 0.02,
+  maxTimeDamageBonus: 1.25,
+  damageStackGainPerHit: 0.09,
+  maxDamageStack: 1.8,
+  damageStackDecayPerSecond: 0.04,
+  fairnessHpGapScale: 0.4,
+  fairnessMinMultiplier: 0.8,
+  fairnessMaxMultiplier: 1.25,
   shieldCooldownSeconds: 2,
   dashCooldownSeconds: 2.5,
   dashSpeed: 320,
   slowDurationSeconds: 1.5,
   slowMultiplier: 0.6,
+  coreHazardStartSeconds: 18,
+  coreHazardBaseRadius: 56,
+  coreHazardPulseAmplitude: 24,
+  coreHazardPulseFrequency: 1.4,
+  coreHazardDps: 13,
   tankHpMultiplier: 1.5,
   tankSpeedMultiplier: 0.8,
   spikyOutgoingMultiplier: 1.3,
@@ -101,6 +114,7 @@ function applyQuantization(ball) {
   ball.hp = quantize(ball.hp);
   ball.maxHp = quantize(ball.maxHp);
   ball.maxSpeed = quantize(ball.maxSpeed);
+  ball.damageStack = quantize(ball.damageStack);
   ball.cooldown = quantize(ball.cooldown);
   ball.shieldTimer = quantize(ball.shieldTimer);
   ball.slowTimer = quantize(ball.slowTimer);
@@ -145,6 +159,7 @@ function createBallBase(id, x, y, vx, vy, abilityType, cfg) {
     hp: maxHp,
     maxHp,
     maxSpeed,
+    damageStack: 0,
     className: profile?.className ?? "Unknown",
     abilityType,
     cooldown: 0,
@@ -211,11 +226,16 @@ function resolveInitialOverlaps(balls) {
 
 function createInitialBalls(cfg) {
   const balls = [];
-  const columns = 6;
-  const spacingX = 140;
-  const spacingY = 120;
-  const startX = 170;
-  const startY = 140;
+  const padding = cfg.ballRadius + 24;
+  const usableWidth = Math.max(0, cfg.arenaWidth - (padding * 2));
+  const usableHeight = Math.max(0, cfg.arenaHeight - (padding * 2));
+  const aspect = cfg.arenaWidth / Math.max(1, cfg.arenaHeight);
+  const columns = Math.max(1, Math.ceil(Math.sqrt(cfg.ballCount * aspect)));
+  const rows = Math.max(1, Math.ceil(cfg.ballCount / columns));
+  const spacingX = columns > 1 ? usableWidth / (columns - 1) : 0;
+  const spacingY = rows > 1 ? usableHeight / (rows - 1) : 0;
+  const startX = padding;
+  const startY = padding;
 
   for (let id = 0; id < cfg.ballCount; id += 1) {
     const row = Math.floor(id / columns);
@@ -297,7 +317,53 @@ function computeBaseCollisionDamage(a, b, cfg, nx, ny) {
   const rvy = a.vy - b.vy;
   const relativeSpeedAlongNormal = Math.max(0, (rvx * nx) + (rvy * ny));
   const rawDamage = cfg.baseDamage + (cfg.relativeDamageScale * relativeSpeedAlongNormal);
-  return clamp(rawDamage, cfg.minDamage, cfg.maxDamage);
+  return rawDamage;
+}
+
+function computeTimeDamageMultiplier(simTime, cfg) {
+  return 1 + Math.min(cfg.maxTimeDamageBonus, cfg.damageRampPerSecond * simTime);
+}
+
+function computeFairnessMultiplier(attacker, defender, cfg) {
+  const attackerHpPct = attacker.maxHp > EPSILON ? attacker.hp / attacker.maxHp : 0;
+  const defenderHpPct = defender.maxHp > EPSILON ? defender.hp / defender.maxHp : 0;
+  const hpGap = defenderHpPct - attackerHpPct;
+  const raw = 1 + (hpGap * cfg.fairnessHpGapScale);
+  return clamp(raw, cfg.fairnessMinMultiplier, cfg.fairnessMaxMultiplier);
+}
+
+function damageStackMultiplier(ball, cfg) {
+  return 1 + clamp(ball.damageStack, 0, cfg.maxDamageStack);
+}
+
+function gainDamageStack(ball, dealtDamage, cfg) {
+  if (dealtDamage <= EPSILON) return;
+  const gain = cfg.damageStackGainPerHit * (dealtDamage / Math.max(cfg.baseDamage, EPSILON));
+  ball.damageStack = clamp(ball.damageStack + gain, 0, cfg.maxDamageStack);
+}
+
+function decayDamageStack(ball, dt, cfg) {
+  if (ball.damageStack <= EPSILON) return;
+  ball.damageStack = Math.max(0, ball.damageStack - (cfg.damageStackDecayPerSecond * dt));
+}
+
+function computeCoreHazardRadius(time, cfg) {
+  if (time < cfg.coreHazardStartSeconds) return 0;
+  const hazardTime = time - cfg.coreHazardStartSeconds;
+  const pulse = (Math.sin(hazardTime * cfg.coreHazardPulseFrequency * Math.PI * 2) + 1) * 0.5;
+  return cfg.coreHazardBaseRadius + (cfg.coreHazardPulseAmplitude * pulse);
+}
+
+function applyCoreHazard(ball, time, dt, cfg) {
+  const radius = computeCoreHazardRadius(time, cfg);
+  if (radius <= EPSILON) return;
+  const centerX = cfg.arenaWidth * 0.5;
+  const centerY = cfg.arenaHeight * 0.5;
+  const dx = ball.x - centerX;
+  const dy = ball.y - centerY;
+  if ((dx * dx) + (dy * dy) <= (radius * radius)) {
+    ball.hp -= cfg.coreHazardDps * dt;
+  }
 }
 
 function outgoingMultiplier(ball, cfg) {
@@ -333,11 +399,22 @@ function applyVampiric(ball, dealtDamage, cfg) {
   ball.hp = Math.min(ball.maxHp, ball.hp + healAmount);
 }
 
-function applyCollisionDamage(a, b, cfg, nx, ny) {
-  const baseDamage = computeBaseCollisionDamage(a, b, cfg, nx, ny);
+function applyCollisionDamage(a, b, cfg, nx, ny, simTime) {
+  const rawDamage = computeBaseCollisionDamage(a, b, cfg, nx, ny);
+  const timeMultiplier = computeTimeDamageMultiplier(simTime, cfg);
+  const scaledDamage = rawDamage * timeMultiplier;
+  const cappedDamage = clamp(scaledDamage, cfg.minDamage, cfg.maxDamage * timeMultiplier);
 
-  let damageToB = baseDamage * outgoingMultiplier(a, cfg) * incomingMultiplier(b, cfg);
-  let damageToA = baseDamage * outgoingMultiplier(b, cfg) * incomingMultiplier(a, cfg);
+  let damageToB = cappedDamage
+    * outgoingMultiplier(a, cfg)
+    * incomingMultiplier(b, cfg)
+    * damageStackMultiplier(a, cfg)
+    * computeFairnessMultiplier(a, b, cfg);
+  let damageToA = cappedDamage
+    * outgoingMultiplier(b, cfg)
+    * incomingMultiplier(a, cfg)
+    * damageStackMultiplier(b, cfg)
+    * computeFairnessMultiplier(b, a, cfg);
 
   damageToB = applyShield(b, damageToB, cfg);
   damageToA = applyShield(a, damageToA, cfg);
@@ -348,11 +425,14 @@ function applyCollisionDamage(a, b, cfg, nx, ny) {
   applyVampiric(a, damageToB, cfg);
   applyVampiric(b, damageToA, cfg);
 
+  gainDamageStack(a, damageToB, cfg);
+  gainDamageStack(b, damageToA, cfg);
+
   applySlowOnHit(a, b, cfg);
   applySlowOnHit(b, a, cfg);
 }
 
-function resolveCollisionPair(a, b, cfg) {
+function resolveCollisionPair(a, b, cfg, simTime) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const norm = normalize(dx, dy);
@@ -402,7 +482,7 @@ function resolveCollisionPair(a, b, cfg) {
 
   const isImpact = hadDegenerateDistance || overlap > EPSILON || velAlongNormal < -EPSILON;
   if (isImpact) {
-    applyCollisionDamage(a, b, cfg, nx, ny);
+    applyCollisionDamage(a, b, cfg, nx, ny, simTime);
   }
 }
 
@@ -458,6 +538,7 @@ export class ArenaSimulation {
       if (ball.cooldown > 0) ball.cooldown = Math.max(0, ball.cooldown - dt);
       if (ball.shieldTimer > 0) ball.shieldTimer = Math.max(0, ball.shieldTimer - dt);
       if (ball.slowTimer > 0) ball.slowTimer = Math.max(0, ball.slowTimer - dt);
+      decayDamageStack(ball, dt, cfg);
 
       applyDash(ball, cfg);
 
@@ -492,7 +573,12 @@ export class ArenaSimulation {
       const b = this.balls[pairBuffer[i + 1]];
       if (!a || !b) continue;
       if (a.hp <= 0 || b.hp <= 0) continue;
-      resolveCollisionPair(a, b, cfg);
+      resolveCollisionPair(a, b, cfg, this.time);
+    }
+
+    for (const ball of this.balls) {
+      if (ball.hp <= 0) continue;
+      applyCoreHazard(ball, this.time, dt, cfg);
     }
 
     // In-place compaction preserves deterministic order and avoids extra arrays.
@@ -539,6 +625,7 @@ export class ArenaSimulation {
       hasher.addScaledFloat(ball.vy);
       hasher.addScaledFloat(ball.hp);
       hasher.addScaledFloat(ball.maxHp);
+      hasher.addScaledFloat(ball.damageStack);
     }
 
     return hasher.digest();
@@ -556,10 +643,21 @@ export class ArenaSimulation {
         vy: ball.vy,
         hp: ball.hp,
         maxHp: ball.maxHp,
+        damageStack: ball.damageStack,
         radius: ball.radius,
         className: ball.className,
         abilityType: ball.abilityType
       }))
+    };
+  }
+
+  getCoreHazardState() {
+    const radius = computeCoreHazardRadius(this.time, this.config);
+    return {
+      active: radius > EPSILON,
+      radius,
+      x: this.config.arenaWidth * 0.5,
+      y: this.config.arenaHeight * 0.5
     };
   }
 

@@ -71,9 +71,16 @@ button:hover {
   font: inherit;
 }
 
+.number-control select {
+  border: 1px solid #444;
+  padding: 2px 4px;
+  font: inherit;
+  background: #fff;
+}
+
 #arenaCanvas {
   width: 100%;
-  max-width: 920px;
+  max-width: 1200px;
   aspect-ratio: 23 / 15;
   border: 2px solid #000;
   background: var(--arena-bg);
@@ -94,10 +101,71 @@ button:hover {
   font-size: 0.9rem;
 }
 
-.class-legend span {
+.legend-item {
   border: 1px solid #222;
   background: #fff;
   padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.class-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  position: relative;
+  border: 1px solid #222;
+  flex: 0 0 18px;
+}
+
+.class-icon--tank {
+  background: linear-gradient(180deg, #cbd5e1 0%, #64748b 100%);
+  border-width: 2px;
+}
+
+.class-icon--spiky {
+  background: conic-gradient(from 0deg, #f97316 0deg 20deg, #7c2d12 20deg 40deg, #f97316 40deg 60deg, #7c2d12 60deg 80deg, #f97316 80deg 100deg, #7c2d12 100deg 120deg, #f97316 120deg 140deg, #7c2d12 140deg 160deg, #f97316 160deg 180deg, #7c2d12 180deg 200deg, #f97316 200deg 220deg, #7c2d12 220deg 240deg, #f97316 240deg 260deg, #7c2d12 260deg 280deg, #f97316 280deg 300deg, #7c2d12 300deg 320deg, #f97316 320deg 340deg, #7c2d12 340deg 360deg);
+}
+
+.class-icon--vampiric {
+  border-color: #7f1d1d;
+  background: radial-gradient(circle at 35% 35%, #fca5a5 0%, #991b1b 58%, #450a0a 100%);
+}
+
+.class-icon--shielded {
+  border-color: #1d4ed8;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #dbeafe 0%, #93c5fd 55%, #1d4ed8 100%);
+}
+
+.class-icon--dash {
+  background: repeating-linear-gradient(-45deg, #0ea5e9 0 3px, #0369a1 3px 6px);
+}
+
+.class-icon--slow {
+  border-color: #065f46;
+  background: radial-gradient(circle, #a7f3d0 0%, #6ee7b7 45%, #047857 100%);
+}
+
+.class-icon--slow::before,
+.class-icon--slow::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  transform-origin: center;
+}
+
+.class-icon--slow::before {
+  transform: translate(-50%, -50%) rotate(0deg);
+}
+
+.class-icon--slow::after {
+  transform: translate(-50%, -50%) rotate(60deg);
 }
 
 .hint {

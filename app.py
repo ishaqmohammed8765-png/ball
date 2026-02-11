@@ -48,6 +48,14 @@ def _bundle_frontend() -> str:
           Balls
           <input id="ballCountInput" type="number" min="1" max="30" step="1" value="18" />
         </label>
+        <label class="number-control" for="arenaSizeSelect">
+          Arena
+          <select id="arenaSizeSelect">
+            <option value="small">Small</option>
+            <option value="medium" selected>Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
         <label class="checkbox">
           <input id="fastForwardToggle" type="checkbox" />
           Fast-forward (8x)
