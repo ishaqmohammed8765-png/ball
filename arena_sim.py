@@ -38,8 +38,8 @@ ABILITY_LABEL: Dict[AbilityType, str] = {
 @dataclass(frozen=True)
 class SimConfig:
     fixed_dt: float = 1.0 / 120.0
-    arena_width: float = 1000.0
-    arena_height: float = 640.0
+    arena_width: float = 920.0
+    arena_height: float = 600.0
     ball_radius: float = 16.0
     base_mass: float = 1.0
     base_max_hp: float = 100.0

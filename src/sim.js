@@ -25,13 +25,40 @@ export const ABILITY_LABEL = Object.freeze({
   [AbilityType.SLOW_ON_HIT]: "Sl"
 });
 
+export const CLASS_PROFILE = Object.freeze({
+  [AbilityType.TANK]: Object.freeze({
+    className: "Juggernaut",
+    ability: "High HP but lower top speed."
+  }),
+  [AbilityType.SPIKY]: Object.freeze({
+    className: "Brawler",
+    ability: "Deals and takes more collision damage."
+  }),
+  [AbilityType.VAMPIRIC]: Object.freeze({
+    className: "Leech",
+    ability: "Heals from damage dealt."
+  }),
+  [AbilityType.SHIELDED]: Object.freeze({
+    className: "Aegis",
+    ability: "Blocks one hit, then recharges."
+  }),
+  [AbilityType.DASH]: Object.freeze({
+    className: "Striker",
+    ability: "Periodically dashes in its movement direction."
+  }),
+  [AbilityType.SLOW_ON_HIT]: Object.freeze({
+    className: "Frost",
+    ability: "Applies slow on contact."
+  })
+});
+
 const QUANTIZE_FACTOR = 1e6;
 const EPSILON = 1e-9;
 
 const DEFAULT_CONFIG = Object.freeze({
   fixedDt: 1 / 120,
-  arenaWidth: 1000,
-  arenaHeight: 640,
+  arenaWidth: 920,
+  arenaHeight: 600,
   ballRadius: 16,
   baseMass: 1,
   baseMaxHp: 100,
@@ -105,6 +132,7 @@ function createBallBase(id, x, y, vx, vy, abilityType, cfg) {
     maxHp *= cfg.tankHpMultiplier;
     maxSpeed *= cfg.tankSpeedMultiplier;
   }
+  const profile = CLASS_PROFILE[abilityType];
 
   return {
     id,
@@ -117,6 +145,7 @@ function createBallBase(id, x, y, vx, vy, abilityType, cfg) {
     hp: maxHp,
     maxHp,
     maxSpeed,
+    className: profile?.className ?? "Unknown",
     abilityType,
     cooldown: 0,
     shieldTimer: 0,
@@ -528,6 +557,7 @@ export class ArenaSimulation {
         hp: ball.hp,
         maxHp: ball.maxHp,
         radius: ball.radius,
+        className: ball.className,
         abilityType: ball.abilityType
       }))
     };

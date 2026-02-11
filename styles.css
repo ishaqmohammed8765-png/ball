@@ -55,10 +55,26 @@ button:hover {
   background: #fff;
 }
 
+.number-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #222;
+  padding: 6px 10px;
+  background: #fff;
+}
+
+.number-control input {
+  width: 70px;
+  border: 1px solid #444;
+  padding: 2px 4px;
+  font: inherit;
+}
+
 #arenaCanvas {
   width: 100%;
-  max-width: 1000px;
-  aspect-ratio: 25 / 16;
+  max-width: 920px;
+  aspect-ratio: 23 / 15;
   border: 2px solid #000;
   background: var(--arena-bg);
   display: block;
@@ -68,6 +84,20 @@ button:hover {
   margin: 8px 0 4px;
   min-height: 1.2rem;
   font-family: "Courier New", monospace;
+}
+
+.class-legend {
+  margin: 4px 0 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 0.9rem;
+}
+
+.class-legend span {
+  border: 1px solid #222;
+  background: #fff;
+  padding: 4px 8px;
 }
 
 .hint {

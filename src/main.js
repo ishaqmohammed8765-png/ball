@@ -1,16 +1,20 @@
-import { ArenaSimulation, ABILITY_LABEL } from "./sim.js";
+import { ArenaSimulation, ABILITY_ORDER, ABILITY_LABEL, CLASS_PROFILE } from "./sim.js";
 
 const canvas = document.getElementById("arenaCanvas");
 const ctx = canvas.getContext("2d");
 const resetBtn = document.getElementById("resetBtn");
+const ballCountInput = document.getElementById("ballCountInput");
 const fastForwardToggle = document.getElementById("fastForwardToggle");
 const determinismBtn = document.getElementById("determinismBtn");
 const statusLine = document.getElementById("statusLine");
+const classLegend = document.getElementById("classLegend");
 
-const sim = new ArenaSimulation();
+const minBallCount = 1;
+const maxBallCount = 30;
+let sim = new ArenaSimulation({ ballCount: 18 });
 
 const fixedDtMs = sim.config.fixedDt * 1000;
-const normalStepsPerFrame = 1;
+const normalStepsPerFrame = 2;
 const fastStepsPerFrame = 8;
 const maxFixedUpdatesPerFrame = 12;
 const maxUpdateBudgetMs = 8;
@@ -35,12 +39,31 @@ function updateStatus(text) {
   statusLine.textContent = text;
 }
 
+function renderClassLegend() {
+  classLegend.innerHTML = ABILITY_ORDER.map((abilityType) => {
+    const profile = CLASS_PROFILE[abilityType];
+    return `<span><strong>${profile.className}</strong> (${ABILITY_LABEL[abilityType]}): ${profile.ability}</span>`;
+  }).join("");
+}
+
+function parseBallCount() {
+  const parsed = Number.parseInt(ballCountInput.value, 10);
+  if (!Number.isFinite(parsed)) return 18;
+  return Math.max(minBallCount, Math.min(maxBallCount, parsed));
+}
+
+function applyBallCountInput() {
+  const ballCount = parseBallCount();
+  ballCountInput.value = String(ballCount);
+  return ballCount;
+}
+
 function drawHud(stepCount, aliveCount) {
   ctx.fillStyle = "#000";
   ctx.font = "14px Courier New";
   ctx.fillText(`Step: ${stepCount}`, 10, 20);
   ctx.fillText(`Alive: ${aliveCount}`, 10, 38);
-  ctx.fillText(`Mode: ${stepsPerFrame === fastStepsPerFrame ? "Fast" : "Normal"}`, 10, 56);
+  ctx.fillText(`Mode: ${stepsPerFrame === fastStepsPerFrame ? "Fast (8x)" : "Normal (2x)"}`, 10, 56);
 }
 
 function drawBall(ball) {
@@ -111,10 +134,11 @@ function frame(now) {
 }
 
 function resetSimulation() {
-  sim.reset();
+  const ballCount = applyBallCountInput();
+  sim = new ArenaSimulation({ ballCount });
   accumulatorMs = 0;
   lastTimestamp = performance.now();
-  updateStatus("Simulation reset to deterministic initial state.");
+  updateStatus(`Simulation reset with ${ballCount} balls.`);
 }
 
 function setFastForward(enabled) {
@@ -122,10 +146,11 @@ function setFastForward(enabled) {
 }
 
 function runDeterminismHash() {
-  const testSim = new ArenaSimulation();
+  const ballCount = applyBallCountInput();
+  const testSim = new ArenaSimulation({ ballCount });
   testSim.stepMany(10000);
   const hash = testSim.hashState();
-  updateStatus(`10,000-step hash: ${hash}`);
+  updateStatus(`10,000-step hash (${ballCount} balls): ${hash}`);
 }
 
 resetBtn.addEventListener("click", resetSimulation);
@@ -134,6 +159,10 @@ fastForwardToggle.addEventListener("change", () => {
   updateStatus(`Fast-forward ${fastForwardToggle.checked ? "enabled" : "disabled"}.`);
 });
 determinismBtn.addEventListener("click", runDeterminismHash);
+ballCountInput.addEventListener("change", () => {
+  const ballCount = applyBallCountInput();
+  updateStatus(`Ball count set to ${ballCount}. Press Reset to apply.`);
+});
 
 window.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
@@ -156,4 +185,5 @@ document.addEventListener("visibilitychange", () => {
 });
 
 updateStatus("Simulation running.");
+renderClassLegend();
 requestAnimationFrame(frame);
