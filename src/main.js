@@ -13,6 +13,7 @@ const fixedDtMs = sim.config.fixedDt * 1000;
 const normalStepsPerFrame = 1;
 const fastStepsPerFrame = 8;
 const maxFixedUpdatesPerFrame = 12;
+const maxUpdateBudgetMs = 8;
 let stepsPerFrame = normalStepsPerFrame;
 let accumulatorMs = 0;
 let lastTimestamp = performance.now();
@@ -34,11 +35,11 @@ function updateStatus(text) {
   statusLine.textContent = text;
 }
 
-function drawHud(snapshot) {
+function drawHud(stepCount, aliveCount) {
   ctx.fillStyle = "#000";
   ctx.font = "14px Courier New";
-  ctx.fillText(`Step: ${snapshot.stepCount}`, 10, 20);
-  ctx.fillText(`Alive: ${snapshot.aliveCount}`, 10, 38);
+  ctx.fillText(`Step: ${stepCount}`, 10, 20);
+  ctx.fillText(`Alive: ${aliveCount}`, 10, 38);
   ctx.fillText(`Mode: ${stepsPerFrame === fastStepsPerFrame ? "Fast" : "Normal"}`, 10, 56);
 }
 
@@ -67,21 +68,21 @@ function drawBall(ball) {
   ctx.strokeRect(barX, barY, barWidth, barHeight);
 
   ctx.fillStyle = "#111";
-  ctx.font = "10px Courier New";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
   ctx.fillText(ABILITY_LABEL[ball.abilityType], ball.x, ball.y);
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
 }
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const snapshot = sim.getSnapshot();
-  drawHud(snapshot);
-  for (const ball of snapshot.balls) {
+  const state = sim.getRenderState();
+  drawHud(state.stepCount, state.aliveCount);
+  ctx.font = "10px Courier New";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const ball of state.balls) {
     drawBall(ball);
   }
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
 }
 
 function frame(now) {
@@ -90,10 +91,14 @@ function frame(now) {
   accumulatorMs += elapsed;
 
   let updateCount = 0;
+  const updateStart = performance.now();
   while (accumulatorMs >= fixedDtMs && updateCount < maxFixedUpdatesPerFrame) {
     sim.stepMany(stepsPerFrame);
     accumulatorMs -= fixedDtMs;
     updateCount += 1;
+    if ((performance.now() - updateStart) >= maxUpdateBudgetMs) {
+      break;
+    }
   }
 
   if (accumulatorMs >= fixedDtMs) {
@@ -140,6 +145,13 @@ window.addEventListener("keydown", (event) => {
     updateStatus(`Fast-forward ${fastForwardToggle.checked ? "enabled" : "disabled"}.`);
   } else if (key === "h") {
     runDeterminismHash();
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    lastTimestamp = performance.now();
+    accumulatorMs = 0;
   }
 });
 

@@ -201,6 +201,9 @@ def resolve_initial_overlaps(balls: List[Ball]) -> None:
                 dx = b.x - a.x
                 dy = b.y - a.y
                 nx, ny, distance = normalize(dx, dy)
+                if distance <= EPSILON:
+                    nx, ny = fallback_direction(min(a.id, b.id))
+                    distance = 0.0
                 min_distance = a.radius + b.radius
                 if distance + EPSILON < min_distance:
                     overlap = min_distance - distance
@@ -351,11 +354,13 @@ class ArenaSimulation:
         dx = b.x - a.x
         dy = b.y - a.y
         nx, ny, distance = normalize(dx, dy)
+        had_degenerate_distance = False
         min_distance = a.radius + b.radius
 
         if distance <= EPSILON:
             nx, ny = fallback_direction(min(a.id, b.id))
             distance = min_distance
+            had_degenerate_distance = True
 
         overlap = min_distance - distance
         if overlap > 0.0:
@@ -384,7 +389,9 @@ class ArenaSimulation:
             b.vx += impulse_x * inv_mass_b
             b.vy += impulse_y * inv_mass_b
 
-        self._apply_collision_damage(a, b, nx, ny)
+        is_impact = had_degenerate_distance or overlap > EPSILON or vel_along_normal < -EPSILON
+        if is_impact:
+            self._apply_collision_damage(a, b, nx, ny)
 
     def step(self) -> None:
         cfg = self.config
@@ -422,22 +429,15 @@ class ArenaSimulation:
                 dy = b.y - a.y
                 min_distance = a.radius + b.radius
                 if (dx * dx) + (dy * dy) <= (min_distance * min_distance):
-                    pairs.append((a.id, b.id))
+                    pairs.append((i, j))
 
-        # Determinism: canonical pair ordering.
-        pairs.sort(key=lambda p: (p[0], p[1]))
-        by_id = {ball.id: ball for ball in self.balls}
-
-        for id_a, id_b in pairs:
-            a = by_id.get(id_a)
-            b = by_id.get(id_b)
-            if a is None or b is None:
-                continue
+        for index_a, index_b in pairs:
+            a = self.balls[index_a]
+            b = self.balls[index_b]
             if a.hp <= 0.0 or b.hp <= 0.0:
                 continue
             self._resolve_collision_pair(a, b)
 
-        self.balls.sort(key=lambda b: b.id)
         self.balls = [ball for ball in self.balls if ball.hp > 0.0]
 
         for ball in self.balls:

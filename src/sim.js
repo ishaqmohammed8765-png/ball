@@ -330,6 +330,7 @@ function resolveCollisionPair(a, b, cfg) {
   let nx = norm.x;
   let ny = norm.y;
   let distance = norm.length;
+  let hadDegenerateDistance = false;
   const minDistance = a.radius + b.radius;
 
   if (distance <= EPSILON) {
@@ -337,6 +338,7 @@ function resolveCollisionPair(a, b, cfg) {
     nx = fallback.x;
     ny = fallback.y;
     distance = minDistance;
+    hadDegenerateDistance = true;
   }
 
   const overlap = minDistance - distance;
@@ -369,7 +371,10 @@ function resolveCollisionPair(a, b, cfg) {
     b.vy += impulseY * invMassB;
   }
 
-  applyCollisionDamage(a, b, cfg, nx, ny);
+  const isImpact = hadDegenerateDistance || overlap > EPSILON || velAlongNormal < -EPSILON;
+  if (isImpact) {
+    applyCollisionDamage(a, b, cfg, nx, ny);
+  }
 }
 
 function createStateHasher() {
@@ -404,6 +409,9 @@ function createStateHasher() {
 export class ArenaSimulation {
   constructor(config = {}) {
     this.config = Object.freeze({ ...DEFAULT_CONFIG, ...config });
+    // Reused buffers to reduce per-step allocations and GC pressure.
+    this._pairBuffer = [];
+    this._renderState = { stepCount: 0, aliveCount: 0, balls: [] };
     this.reset();
   }
 
@@ -435,7 +443,8 @@ export class ArenaSimulation {
       limitVelocity(ball, speedCap);
     }
 
-    const pairs = [];
+    const pairBuffer = this._pairBuffer;
+    pairBuffer.length = 0;
     for (let i = 0; i < this.balls.length; i += 1) {
       for (let j = i + 1; j < this.balls.length; j += 1) {
         const a = this.balls[i];
@@ -444,20 +453,29 @@ export class ArenaSimulation {
         const dy = b.y - a.y;
         const minDistance = a.radius + b.radius;
         if ((dx * dx) + (dy * dy) <= (minDistance * minDistance)) {
-          pairs.push([i, j]);
+          pairBuffer.push(i, j);
         }
       }
     }
 
-    for (const [indexA, indexB] of pairs) {
-      const a = this.balls[indexA];
-      const b = this.balls[indexB];
+    for (let i = 0; i < pairBuffer.length; i += 2) {
+      const a = this.balls[pairBuffer[i]];
+      const b = this.balls[pairBuffer[i + 1]];
       if (!a || !b) continue;
       if (a.hp <= 0 || b.hp <= 0) continue;
       resolveCollisionPair(a, b, cfg);
     }
 
-    this.balls = this.balls.filter((ball) => ball.hp > 0);
+    // In-place compaction preserves deterministic order and avoids extra arrays.
+    let writeIndex = 0;
+    for (let i = 0; i < this.balls.length; i += 1) {
+      const ball = this.balls[i];
+      if (ball.hp > 0) {
+        this.balls[writeIndex] = ball;
+        writeIndex += 1;
+      }
+    }
+    this.balls.length = writeIndex;
 
     for (const ball of this.balls) {
       const slowFactor = ball.slowTimer > 0 ? cfg.slowMultiplier : 1;
@@ -513,5 +531,12 @@ export class ArenaSimulation {
         abilityType: ball.abilityType
       }))
     };
+  }
+
+  getRenderState() {
+    this._renderState.stepCount = this.stepCount;
+    this._renderState.aliveCount = this.balls.length;
+    this._renderState.balls = this.balls;
+    return this._renderState;
   }
 }

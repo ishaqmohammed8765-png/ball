@@ -44,6 +44,10 @@ with col_hash:
 if st.session_state.last_hash:
     st.code(f"10,000-step hash: {st.session_state.last_hash}")
 
+frame_start = time.perf_counter()
+target_fps = 60.0
+target_frame_seconds = 1.0 / target_fps
+
 steps_per_render = 8 if st.session_state.fast_forward else 1
 sim.step_many(steps_per_render)
 
@@ -110,7 +114,10 @@ for ball in snapshot["balls"]:
 st.pyplot(fig, clear_figure=True)
 
 if snapshot["alive_count"] > 1:
-    time.sleep(1.0 / 60.0)
+    elapsed = time.perf_counter() - frame_start
+    remaining = target_frame_seconds - elapsed
+    if remaining > 0:
+        time.sleep(remaining)
     st.rerun()
 else:
     st.success("Simulation complete.")
