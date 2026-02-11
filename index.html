@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bouncing Balls Arena</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>Bouncing Balls Arena</h1>
+      <div class="toolbar">
+        <button id="resetBtn" type="button">Reset</button>
+        <label class="checkbox">
+          <input id="fastForwardToggle" type="checkbox" />
+          Fast-forward (8x)
+        </label>
+        <button id="determinismBtn" type="button">Run 10,000-step Hash</button>
+      </div>
+      <canvas id="arenaCanvas" width="1000" height="640"></canvas>
+      <p id="statusLine">Ready</p>
+      <p class="hint">Keyboard: <code>R</code> reset, <code>F</code> fast-forward toggle, <code>H</code> hash test.</p>
+    </main>
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>
