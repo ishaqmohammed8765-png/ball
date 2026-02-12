@@ -6,5 +6,8 @@
   "scripts": {
     "test:determinism": "node scripts/determinism-test.mjs",
     "test:determinism:py": "python scripts/determinism_test.py"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
   }
 }

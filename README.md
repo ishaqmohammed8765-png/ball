@@ -1,36 +1,55 @@
-# Bouncing Balls Arena (Streamlit)
+# Deterministic Bouncing Balls (Phaser + Vite)
 
-Deterministic auto-battler simulation with custom circle physics (no RNG).
+This repository is now a Phaser 3 browser game.  
+All Streamlit app code was removed.
 
-## Run
+## Run Locally
 
-1. Install deps:
-   - `pip install -r requirements.txt`
-2. Start app:
-   - `streamlit run app.py`
+```bash
+cd phaser_app
+npm install
+npm run dev
+```
+
+## Build Static Files
+
+```bash
+cd phaser_app
+npm run build
+```
+
+Vite outputs static deployable files to `phaser_app/dist`.
 
 ## Controls
 
-- `Reset`: reset to exact deterministic initial state.
-- `Class Loadout`: set count per class; total count becomes the spawned ball count.
-- `Balls`: read-only total derived from class loadout.
-- `Arena`: switch between Small/Medium/Large arenas, then press `Reset` to apply.
-- `Fast-forward (8x)`: run 8 fixed steps per render refresh.
-- `Run 10,000-step Hash`: executes deterministic test on a fresh sim and prints hash.
-- `Class legend`: each class card shows its short label and built-in ability.
-- Combat pacing: collision damage ramps with elapsed time and each damaging hit builds temporary attacker momentum.
+- `Reset` button or `R` key: reset to the exact same initial deterministic state.
+- `Fast-forward` button or `F` key: simulate at 8x fixed-step speed.
+- `Determinism Test 10,000` button or `H` key: runs a headless 10,000-step simulation from reset and prints a hash.
 
-## Determinism Rules
+## Determinism Guarantees
 
-- Fixed timestep only: simulation always advances in `dt = 1/120` in `arena_sim.py`.
-- Stable update order: balls are sorted by `id` before updates and before removals.
-- Stable collision order: collision pairs are resolved sorted by `(minId, maxId)`.
-- Deterministic collision solver: positional correction + impulse with constant parameters.
-- No randomness: no RNG calls, no shuffling, no time-based seeds, no parallel nondeterministic jobs.
-- Quantized state: position/velocity/HP/timers are rounded each fixed step to reduce drift.
-- Deterministic abilities only: all abilities are timer/id/order-based and contain no random target choice.
+- Fixed timestep simulation (`dt = 1/120`) with time accumulation in the render loop.
+- Stable ordering:
+  - ball updates in ascending `id`
+  - collision pairs sorted by `(minId, maxId)`
+  - dead-ball removal in ascending `id`
+- No randomness:
+  - no `Math.random`
+  - deterministic grid spawn for exactly 20 balls
+  - fixed velocity list cycling by `id`
+  - ability assignment by `id % abilityCount`
+- Custom deterministic circle collision solver:
+  - explicit circle-circle overlap checks
+  - positional correction + impulse resolution
+- Quantized state each step (positions, velocities, hp, timers) to reduce floating drift.
 
-## Verify Determinism
+## Main Simulation Code
 
-1. Run `python scripts/determinism_test.py` multiple times.
-2. Confirm the printed `hash=` is identical each run on the same machine.
+- `phaser_app/src/sim/state.js`: deterministic initial state and spawn.
+- `phaser_app/src/sim/step.js`: fixed-step simulation, abilities, damage, removal.
+- `phaser_app/src/sim/collisions.js`: deterministic collision detection/resolution.
+- `phaser_app/src/sim/abilities.js`: ability logic.
+- `phaser_app/src/sim/hash.js`: stable hash for determinism validation.
+- `phaser_app/src/ui/render.js`: arena and ball rendering.
+- `phaser_app/src/ui/hud.js`: HUD updates.
+- `phaser_app/src/main.js`: Phaser setup, controls, fixed timestep loop.
