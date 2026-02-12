@@ -11,6 +11,8 @@
       <h1>Bouncing Balls Arena</h1>
       <div class="toolbar">
         <button id="resetBtn" type="button">Reset</button>
+        <button id="pauseBtn" type="button">Pause</button>
+        <button id="stepBtn" type="button">Step</button>
         <label class="number-control" for="ballCountInput">
           Balls
           <input id="ballCountInput" type="number" min="1" max="180" step="1" value="18" readonly />
@@ -27,12 +29,34 @@
           <input id="fastForwardToggle" type="checkbox" />
           Fast-forward (8x)
         </label>
+        <label class="checkbox">
+          <input id="autoResetToggle" type="checkbox" checked />
+          Auto-reset rounds
+        </label>
+        <label class="checkbox">
+          <input id="debugToggle" type="checkbox" />
+          Debug panel
+        </label>
         <button id="determinismBtn" type="button">Run 10,000-step Hash</button>
       </div>
       <section class="class-composer" aria-label="Class loadout">
         <p class="composer-title">Class Loadout (sets total balls)</p>
+        <div class="preset-row">
+          <label class="number-control" for="presetSelect">
+            Preset
+            <select id="presetSelect">
+              <option value="balanced" selected>Balanced</option>
+              <option value="aggressive">Aggressive</option>
+              <option value="defensive">Defensive</option>
+              <option value="duel">Duel</option>
+            </select>
+          </label>
+          <button id="applyPresetBtn" type="button">Apply Preset</button>
+        </div>
         <div id="classPicker" class="class-picker" aria-live="polite"></div>
       </section>
+      <p id="winnerLine" class="winner-line" aria-live="polite"></p>
+      <pre id="debugPanel" class="debug-panel" aria-live="polite"></pre>
       <canvas id="arenaCanvas" width="920" height="600"></canvas>
       <p id="statusLine">Ready</p>
       <div id="classLegend" class="class-legend" aria-live="polite"></div>

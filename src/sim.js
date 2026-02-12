@@ -4,7 +4,10 @@ export const AbilityType = Object.freeze({
   VAMPIRIC: "VAMPIRIC",
   SHIELDED: "SHIELDED",
   DASH: "DASH",
-  SLOW_ON_HIT: "SLOW_ON_HIT"
+  SLOW_ON_HIT: "SLOW_ON_HIT",
+  BERSERKER: "BERSERKER",
+  REGEN: "REGEN",
+  BRUISER: "BRUISER"
 });
 
 export const ABILITY_ORDER = [
@@ -13,7 +16,10 @@ export const ABILITY_ORDER = [
   AbilityType.VAMPIRIC,
   AbilityType.SHIELDED,
   AbilityType.DASH,
-  AbilityType.SLOW_ON_HIT
+  AbilityType.SLOW_ON_HIT,
+  AbilityType.BERSERKER,
+  AbilityType.REGEN,
+  AbilityType.BRUISER
 ];
 
 export const ABILITY_LABEL = Object.freeze({
@@ -22,7 +28,10 @@ export const ABILITY_LABEL = Object.freeze({
   [AbilityType.VAMPIRIC]: "V",
   [AbilityType.SHIELDED]: "Sh",
   [AbilityType.DASH]: "D",
-  [AbilityType.SLOW_ON_HIT]: "Sl"
+  [AbilityType.SLOW_ON_HIT]: "Sl",
+  [AbilityType.BERSERKER]: "Bz",
+  [AbilityType.REGEN]: "Rg",
+  [AbilityType.BRUISER]: "Br"
 });
 
 export const CLASS_PROFILE = Object.freeze({
@@ -49,6 +58,18 @@ export const CLASS_PROFILE = Object.freeze({
   [AbilityType.SLOW_ON_HIT]: Object.freeze({
     className: "Frost",
     ability: "Applies slow on contact."
+  }),
+  [AbilityType.BERSERKER]: Object.freeze({
+    className: "Rage",
+    ability: "Deals more damage as HP drops."
+  }),
+  [AbilityType.REGEN]: Object.freeze({
+    className: "Bloom",
+    ability: "Regenerates health each second."
+  }),
+  [AbilityType.BRUISER]: Object.freeze({
+    className: "Breaker",
+    ability: "Adds flat collision damage."
   })
 });
 
@@ -88,6 +109,9 @@ const DEFAULT_CONFIG = Object.freeze({
   spikyOutgoingMultiplier: 1.3,
   spikyIncomingMultiplier: 1.1,
   vampiricHealRatio: 0.2,
+  berserkerMaxDamageBonus: 0.7,
+  regenHealPerSecond: 5,
+  bruiserFlatDamageBonus: 2.8,
   ballCount: 18,
   abilitySequence: Object.freeze([])
 });
@@ -347,6 +371,11 @@ function decayDamageStack(ball, dt, cfg) {
 
 function outgoingMultiplier(ball, cfg) {
   if (ball.abilityType === AbilityType.SPIKY) return cfg.spikyOutgoingMultiplier;
+  if (ball.abilityType === AbilityType.BERSERKER) {
+    const hpPct = ball.maxHp > EPSILON ? ball.hp / ball.maxHp : 0;
+    const missingHp = 1 - clamp(hpPct, 0, 1);
+    return 1 + (missingHp * cfg.berserkerMaxDamageBonus);
+  }
   return 1;
 }
 
@@ -378,18 +407,31 @@ function applyVampiric(ball, dealtDamage, cfg) {
   ball.hp = Math.min(ball.maxHp, ball.hp + healAmount);
 }
 
+function flatDamageBonus(ball, cfg) {
+  if (ball.abilityType === AbilityType.BRUISER) return cfg.bruiserFlatDamageBonus;
+  return 0;
+}
+
+function applyRegen(ball, dt, cfg) {
+  if (ball.abilityType !== AbilityType.REGEN) return;
+  if (ball.hp <= 0) return;
+  ball.hp = Math.min(ball.maxHp, ball.hp + (cfg.regenHealPerSecond * dt));
+}
+
 function applyCollisionDamage(a, b, cfg, nx, ny, simTime) {
   const rawDamage = computeBaseCollisionDamage(a, b, cfg, nx, ny);
   const timeMultiplier = computeTimeDamageMultiplier(simTime, cfg);
   const scaledDamage = rawDamage * timeMultiplier;
   const cappedDamage = clamp(scaledDamage, cfg.minDamage, cfg.maxDamage * timeMultiplier);
 
-  let damageToB = cappedDamage
+  const baseToB = cappedDamage + flatDamageBonus(a, cfg);
+  const baseToA = cappedDamage + flatDamageBonus(b, cfg);
+  let damageToB = baseToB
     * outgoingMultiplier(a, cfg)
     * incomingMultiplier(b, cfg)
     * damageStackMultiplier(a, cfg)
     * computeFairnessMultiplier(a, b, cfg);
-  let damageToA = cappedDamage
+  let damageToA = baseToA
     * outgoingMultiplier(b, cfg)
     * incomingMultiplier(a, cfg)
     * damageStackMultiplier(b, cfg)
@@ -524,6 +566,7 @@ export class ArenaSimulation {
       if (ball.cooldown > 0) ball.cooldown = Math.max(0, ball.cooldown - dt);
       if (ball.shieldTimer > 0) ball.shieldTimer = Math.max(0, ball.shieldTimer - dt);
       if (ball.slowTimer > 0) ball.slowTimer = Math.max(0, ball.slowTimer - dt);
+      applyRegen(ball, dt, cfg);
       decayDamageStack(ball, dt, cfg);
 
       applyDash(ball, cfg);

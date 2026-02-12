@@ -118,6 +118,14 @@ button:hover {
   font: inherit;
 }
 
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 #arenaCanvas {
   width: 100%;
   max-width: 1200px;
@@ -128,9 +136,31 @@ button:hover {
 }
 
 #statusLine {
-  margin: 8px 0 4px;
+  display: none;
+}
+
+.winner-line {
   min-height: 1.2rem;
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: #7c2d12;
+}
+
+.debug-panel {
+  display: none;
+  margin: 0 0 8px;
+  border: 1px solid #111;
+  background: #f9fafb;
+  color: #111;
   font-family: "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.debug-panel.is-visible {
+  display: block;
 }
 
 .class-legend {
@@ -157,59 +187,52 @@ button:hover {
   position: relative;
   border: 1px solid #222;
   flex: 0 0 18px;
+  image-rendering: pixelated;
+  background-size: 6px 6px;
 }
 
 .class-icon--tank {
-  background: linear-gradient(180deg, #cbd5e1 0%, #64748b 100%);
-  border-width: 2px;
+  background-image: repeating-linear-gradient(0deg, #1f2937 0 3px, #94a3b8 3px 6px);
 }
 
 .class-icon--spiky {
-  background: conic-gradient(from 0deg, #f97316 0deg 20deg, #7c2d12 20deg 40deg, #f97316 40deg 60deg, #7c2d12 60deg 80deg, #f97316 80deg 100deg, #7c2d12 100deg 120deg, #f97316 120deg 140deg, #7c2d12 140deg 160deg, #f97316 160deg 180deg, #7c2d12 180deg 200deg, #f97316 200deg 220deg, #7c2d12 220deg 240deg, #f97316 240deg 260deg, #7c2d12 260deg 280deg, #f97316 280deg 300deg, #7c2d12 300deg 320deg, #f97316 320deg 340deg, #7c2d12 340deg 360deg);
+  background-image: repeating-linear-gradient(45deg, #f97316 0 3px, #7c2d12 3px 6px);
 }
 
 .class-icon--vampiric {
   border-color: #7f1d1d;
-  background: radial-gradient(circle at 35% 35%, #fca5a5 0%, #991b1b 58%, #450a0a 100%);
+  background-image: repeating-linear-gradient(90deg, #991b1b 0 3px, #fecaca 3px 6px);
 }
 
 .class-icon--shielded {
   border-color: #1d4ed8;
-  border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, #dbeafe 0%, #93c5fd 55%, #1d4ed8 100%);
+  background-image: repeating-linear-gradient(0deg, #1d4ed8 0 3px, #93c5fd 3px 6px);
 }
 
 .class-icon--dash {
-  background: repeating-linear-gradient(-45deg, #0ea5e9 0 3px, #0369a1 3px 6px);
+  background-image: repeating-linear-gradient(-45deg, #38bdf8 0 3px, #0369a1 3px 6px);
 }
 
 .class-icon--slow {
   border-color: #065f46;
-  background: radial-gradient(circle, #a7f3d0 0%, #6ee7b7 45%, #047857 100%);
+  background-image: repeating-linear-gradient(90deg, #047857 0 3px, #a7f3d0 3px 6px);
 }
 
-.class-icon--slow::before,
-.class-icon--slow::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 1px;
-  height: 14px;
-  background: rgba(255, 255, 255, 0.95);
-  transform-origin: center;
+.class-icon--berserker {
+  border-color: #7f1d1d;
+  background-image: repeating-linear-gradient(45deg, #b91c1c 0 3px, #fca5a5 3px 6px);
 }
 
-.class-icon--slow::before {
-  transform: translate(-50%, -50%) rotate(0deg);
+.class-icon--regen {
+  border-color: #166534;
+  background-image: repeating-linear-gradient(45deg, #15803d 0 3px, #86efac 3px 6px);
 }
 
-.class-icon--slow::after {
-  transform: translate(-50%, -50%) rotate(60deg);
+.class-icon--bruiser {
+  border-color: #78350f;
+  background-image: repeating-linear-gradient(0deg, #78350f 0 3px, #fbbf24 3px 6px);
 }
 
 .hint {
-  margin: 0;
-  font-size: 0.92rem;
-  color: #333;
+  display: none;
 }

@@ -53,4 +53,4 @@ st.title("Bouncing Balls Arena")
 st.caption("Realtime canvas mode enabled for smoother animation and lower stutter.")
 
 html = _bundle_frontend()
-components.html(html, height=1040, scrolling=False)
+components.html(html, height=1160, scrolling=False)

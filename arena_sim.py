@@ -14,6 +14,9 @@ class AbilityType(str, Enum):
     SHIELDED = "SHIELDED"
     DASH = "DASH"
     SLOW_ON_HIT = "SLOW_ON_HIT"
+    BERSERKER = "BERSERKER"
+    REGEN = "REGEN"
+    BRUISER = "BRUISER"
 
 
 ABILITY_ORDER: List[AbilityType] = [
@@ -23,6 +26,9 @@ ABILITY_ORDER: List[AbilityType] = [
     AbilityType.SHIELDED,
     AbilityType.DASH,
     AbilityType.SLOW_ON_HIT,
+    AbilityType.BERSERKER,
+    AbilityType.REGEN,
+    AbilityType.BRUISER,
 ]
 
 ABILITY_LABEL: Dict[AbilityType, str] = {
@@ -32,6 +38,9 @@ ABILITY_LABEL: Dict[AbilityType, str] = {
     AbilityType.SHIELDED: "Sh",
     AbilityType.DASH: "D",
     AbilityType.SLOW_ON_HIT: "Sl",
+    AbilityType.BERSERKER: "Bz",
+    AbilityType.REGEN: "Rg",
+    AbilityType.BRUISER: "Br",
 }
 
 
@@ -69,6 +78,9 @@ class SimConfig:
     spiky_outgoing_multiplier: float = 1.3
     spiky_incoming_multiplier: float = 1.1
     vampiric_heal_ratio: float = 0.2
+    berserker_max_damage_bonus: float = 0.7
+    regen_heal_per_second: float = 5.0
+    bruiser_flat_damage_bonus: float = 2.8
     ball_count: int = 18
     ability_sequence: Tuple[AbilityType, ...] = ()
 
@@ -355,6 +367,10 @@ class ArenaSimulation:
     def _outgoing_multiplier(self, ball: Ball) -> float:
         if ball.ability_type == AbilityType.SPIKY:
             return self.config.spiky_outgoing_multiplier
+        if ball.ability_type == AbilityType.BERSERKER:
+            hp_pct = ball.hp / ball.max_hp if ball.max_hp > EPSILON else 0.0
+            missing_hp = 1.0 - clamp(hp_pct, 0.0, 1.0)
+            return 1.0 + (missing_hp * self.config.berserker_max_damage_bonus)
         return 1.0
 
     def _incoming_multiplier(self, ball: Ball) -> float:
@@ -387,21 +403,36 @@ class ArenaSimulation:
         heal = dealt_damage * self.config.vampiric_heal_ratio
         ball.hp = min(ball.max_hp, ball.hp + heal)
 
+    def _flat_damage_bonus(self, ball: Ball) -> float:
+        if ball.ability_type == AbilityType.BRUISER:
+            return self.config.bruiser_flat_damage_bonus
+        return 0.0
+
+    def _apply_regen(self, ball: Ball, dt: float) -> None:
+        if ball.ability_type != AbilityType.REGEN:
+            return
+        if ball.hp <= 0.0:
+            return
+        ball.hp = min(ball.max_hp, ball.hp + (self.config.regen_heal_per_second * dt))
+
     def _apply_collision_damage(self, a: Ball, b: Ball, nx: float, ny: float) -> None:
         time_multiplier = self._time_damage_multiplier()
         raw = self._base_collision_damage(a, b, nx, ny)
         scaled = raw * time_multiplier
         base = clamp(scaled, self.config.min_damage, self.config.max_damage * time_multiplier)
 
+        base_to_b = base + self._flat_damage_bonus(a)
+        base_to_a = base + self._flat_damage_bonus(b)
+
         damage_to_b = (
-            base
+            base_to_b
             * self._outgoing_multiplier(a)
             * self._incoming_multiplier(b)
             * self._damage_stack_multiplier(a)
             * self._fairness_multiplier(a, b)
         )
         damage_to_a = (
-            base
+            base_to_a
             * self._outgoing_multiplier(b)
             * self._incoming_multiplier(a)
             * self._damage_stack_multiplier(b)
@@ -480,6 +511,7 @@ class ArenaSimulation:
                 ball.shield_timer = max(0.0, ball.shield_timer - dt)
             if ball.slow_timer > 0.0:
                 ball.slow_timer = max(0.0, ball.slow_timer - dt)
+            self._apply_regen(ball, dt)
             self._decay_damage_stack(ball, dt)
 
             self._apply_dash(ball)
