@@ -3,82 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Deterministic Bouncing Balls</title>
+    <title>Phaser + Vite</title>
     <style>
-      :root {
-        color-scheme: light;
-      }
-
       body {
         margin: 0;
-        font-family: Arial, sans-serif;
         background: #ffffff;
-        color: #111111;
-      }
-
-      #app {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 12px;
-      }
-
-      .toolbar {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 8px;
-      }
-
-      button {
-        border: 1px solid #111111;
-        background: #ffffff;
-        color: #111111;
-        padding: 6px 10px;
-        cursor: pointer;
-      }
-
-      button.active {
-        background: #111111;
-        color: #ffffff;
-      }
-
-      .status {
-        margin-left: 10px;
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-        font-size: 14px;
-      }
-
-      #game-root {
-        border: 1px solid #111111;
-        width: 100%;
-        max-width: 940px;
-        background: #ffffff;
-      }
-
-      .hint {
-        margin-top: 8px;
-        font-size: 13px;
       }
     </style>
   </head>
   <body>
-    <div id="app">
-      <div class="toolbar">
-        <button id="reset-btn" type="button">Reset (R)</button>
-        <button id="ff-btn" type="button">Fast-forward (F)</button>
-        <button id="hash-btn" type="button">Determinism Test 10,000 (H)</button>
-        <div class="status">
-          <span id="step-text">Step: 0</span>
-          <span id="alive-text">Alive: 0</span>
-          <span id="hash-text">Hash: -</span>
-        </div>
-      </div>
-      <div id="game-root"></div>
-      <div class="hint">No RNG. Fixed timestep: 1/120 sec. Collision and update order are deterministic.</div>
-    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
