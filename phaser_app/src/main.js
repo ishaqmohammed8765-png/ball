@@ -3,77 +3,132 @@ import Phaser from "phaser";
 const BORDER_THICKNESS = 8;
 const FIXED_DT = 1 / 120;
 const POSITION_ROUNDING = 1_000_000;
-const MAX_SPEED = 700;
+const MAX_SPEED = 760;
+const PIXEL_SIZE = 3;
 
 const RESTITUTION = 0.98;
-const BASE_DAMAGE = 1.3;
-const DAMAGE_SCALE = 0.11;
+const BASE_DAMAGE = 1.2;
+const DAMAGE_SCALE = 0.1;
 const MIN_DAMAGE = 0.35;
-const MAX_DAMAGE = 20;
+const MAX_DAMAGE = 24;
+const IMPACT_DAMAGE_THRESHOLD = 18;
+const SPEED_DAMAGE_SCALE = 1.2;
+const SPEED_DAMAGE_BONUS_CAP = 1.25;
+const COLLISION_DAMAGE_COOLDOWN = 0.09;
 
 const FAST_FORWARD_STEPS = 4;
 const NORMAL_STEPS = 1;
 
-const CLASS_KEYS = ["tank", "striker", "medic", "trickster"];
+const CLASS_KEYS = ["tank", "striker", "medic", "trickster", "sniper", "vampire", "bulwark"];
 
 const CLASS_DEFS = {
   tank: {
     label: "Tank",
+    description: "Heavy body. Very durable but slower and lower damage.",
     color: 0x2f6fdb,
     radius: 22,
-    mass: 1.6,
-    maxHp: 150,
+    mass: 1.65,
+    maxHp: 155,
     speed: 165,
-    outgoingDamageMult: 0.85,
-    incomingDamageMult: 0.72,
+    outgoingDamageMult: 0.84,
+    incomingDamageMult: 0.7,
     wallBounceMult: 0.9
   },
   striker: {
     label: "Striker",
+    description: "Aggressive burst damage class with high impact attacks.",
     color: 0xe64b3c,
     radius: 17,
     mass: 1.0,
     maxHp: 100,
-    speed: 250,
+    speed: 255,
     outgoingDamageMult: 1.35,
     incomingDamageMult: 1.0,
     wallBounceMult: 1.0
   },
   medic: {
     label: "Medic",
+    description: "Regenerates health over time, excels in long fights.",
     color: 0x23b46e,
     radius: 18,
     mass: 1.05,
-    maxHp: 110,
-    speed: 205,
+    maxHp: 112,
+    speed: 210,
     outgoingDamageMult: 1.0,
     incomingDamageMult: 0.95,
     wallBounceMult: 1.0,
-    regenPerSecond: 4.5
+    regenPerSecond: 4.7
   },
   trickster: {
     label: "Trickster",
+    description: "Dashes periodically and gains speed from wall rebounds.",
     color: 0xf0b429,
     radius: 16,
     mass: 0.8,
-    maxHp: 90,
+    maxHp: 92,
     speed: 240,
-    outgoingDamageMult: 1.05,
+    outgoingDamageMult: 1.06,
     incomingDamageMult: 1.08,
     wallBounceMult: 1.08,
     dashCooldown: 2.8,
     dashMultiplier: 1.45
+  },
+  sniper: {
+    label: "Sniper",
+    description: "Glass cannon. High impact collisions deal extra precision damage.",
+    color: 0x8f47ff,
+    radius: 15,
+    mass: 0.9,
+    maxHp: 88,
+    speed: 230,
+    outgoingDamageMult: 1.2,
+    incomingDamageMult: 1.08,
+    wallBounceMult: 1.02,
+    impactThreshold: 210,
+    impactBonusMult: 1.55
+  },
+  vampire: {
+    label: "Vampire",
+    description: "Lifesteal class. Heals from damage dealt to enemies.",
+    color: 0x8d123f,
+    radius: 17,
+    mass: 1.02,
+    maxHp: 105,
+    speed: 218,
+    outgoingDamageMult: 1.1,
+    incomingDamageMult: 1.0,
+    wallBounceMult: 1.0,
+    lifesteal: 0.28
+  },
+  bulwark: {
+    label: "Bulwark",
+    description: "Periodic shield and damage reflection (thorns).",
+    color: 0x54717a,
+    radius: 20,
+    mass: 1.35,
+    maxHp: 130,
+    speed: 185,
+    outgoingDamageMult: 0.96,
+    incomingDamageMult: 0.92,
+    wallBounceMult: 0.96,
+    shieldCooldown: 4.4,
+    shieldDuration: 1.2,
+    shieldReductionMult: 0.45,
+    thorns: 0.2
   }
 };
 
 const DEFAULT_SETUP = {
-  arenaWidth: 900,
-  arenaHeight: 600,
+  arenaWidth: 980,
+  arenaHeight: 640,
   classCounts: {
-    tank: 5,
-    striker: 6,
-    medic: 4,
-    trickster: 5
+    tank: 4,
+    striker: 5,
+    medic: 3,
+    trickster: 4,
+    sniper: 3,
+    vampire: 3,
+    bulwark: 3
   }
 };
 
@@ -98,7 +153,7 @@ function sanitizeCount(value) {
   if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
     return 0;
   }
-  return clamp(parsed, 0, 80);
+  return clamp(parsed, 0, 90);
 }
 
 function sanitizeDimension(value, fallback) {
@@ -106,7 +161,7 @@ function sanitizeDimension(value, fallback) {
   if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
     return fallback;
   }
-  return clamp(parsed, 420, 2000);
+  return clamp(parsed, 420, 2200);
 }
 
 function createBall(id, classKey, x, y, vx, vy) {
@@ -126,7 +181,9 @@ function createBall(id, classKey, x, y, vx, vy) {
     color: def.color,
     alive: true,
     abilityState: {
-      tricksterDashTimer: def.dashCooldown ?? 0
+      tricksterDashTimer: def.dashCooldown ?? 0,
+      bulwarkShieldCooldown: def.shieldCooldown ?? 0,
+      bulwarkShieldTimeLeft: 0
     }
   };
 }
@@ -151,8 +208,8 @@ function createInitialBalls(setup) {
   const total = classPool.length;
   const cols = Math.max(1, Math.ceil(Math.sqrt(total * (setup.arenaWidth / setup.arenaHeight))));
   const rows = Math.max(1, Math.ceil(total / cols));
-  const marginX = Math.max(50, Math.min(120, setup.arenaWidth * 0.12));
-  const marginY = Math.max(50, Math.min(120, setup.arenaHeight * 0.12));
+  const marginX = Math.max(50, Math.min(130, setup.arenaWidth * 0.12));
+  const marginY = Math.max(50, Math.min(130, setup.arenaHeight * 0.12));
   const spanX = Math.max(0, setup.arenaWidth - marginX * 2);
   const spanY = Math.max(0, setup.arenaHeight - marginY * 2);
 
@@ -183,29 +240,44 @@ function addStyles() {
   const styleTag = document.createElement("style");
   styleTag.id = "ball-controls-style";
   styleTag.textContent = `
+    body {
+      background:
+        linear-gradient(0deg, rgba(25, 26, 35, 0.72), rgba(25, 26, 35, 0.72)),
+        repeating-linear-gradient(
+          0deg,
+          #2b2f3b 0 6px,
+          #232733 6px 12px
+        );
+    }
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
     #ball-controls {
       position: fixed;
-      top: 12px;
-      right: 12px;
+      top: 10px;
+      right: 10px;
       z-index: 50;
-      width: 230px;
-      background: rgba(12, 12, 18, 0.86);
+      width: 292px;
+      max-height: calc(100vh - 20px);
+      overflow: auto;
+      background: rgba(11, 13, 18, 0.92);
       color: #f3f4f6;
-      border-radius: 10px;
+      border: 2px solid #4b5563;
+      border-radius: 8px;
       padding: 12px;
-      font-family: "Segoe UI", Tahoma, sans-serif;
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      font-family: "Consolas", "Courier New", monospace;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
       user-select: none;
     }
     #ball-controls h2 {
       margin: 0 0 10px;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 700;
-      letter-spacing: 0.35px;
     }
     #ball-controls .row {
       display: grid;
-      grid-template-columns: 1fr 70px;
+      grid-template-columns: 1fr 80px;
       gap: 8px;
       align-items: center;
       margin-bottom: 6px;
@@ -218,27 +290,28 @@ function addStyles() {
       width: 100%;
       box-sizing: border-box;
       border: 1px solid #374151;
-      border-radius: 6px;
+      border-radius: 4px;
       padding: 5px 6px;
       font-size: 12px;
       background: #111827;
       color: #f9fafb;
+      font-family: inherit;
     }
     #ball-controls .actions {
       display: grid;
-      grid-template-columns: 1fr;
-      gap: 6px;
       margin-top: 8px;
+      margin-bottom: 10px;
     }
     #ball-controls button {
       border: 0;
-      border-radius: 7px;
+      border-radius: 6px;
       padding: 8px 9px;
       cursor: pointer;
       font-weight: 700;
       font-size: 12px;
       background: #f59e0b;
       color: #111827;
+      font-family: inherit;
     }
     #ball-controls .hint {
       margin-top: 8px;
@@ -246,13 +319,33 @@ function addStyles() {
       color: #d1d5db;
       line-height: 1.3;
     }
+    #ball-controls .desc-title {
+      margin-top: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #fde68a;
+    }
+    #ball-controls .class-desc {
+      margin: 0 0 6px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #d1d5db;
+    }
+    #ball-controls .swatch {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border: 1px solid #111827;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
   `;
   document.head.appendChild(styleTag);
 }
 
 function buildControls(scene) {
   addStyles();
-
   let root = document.getElementById("ball-controls");
   if (!root) {
     root = document.createElement("div");
@@ -260,71 +353,70 @@ function buildControls(scene) {
     document.body.appendChild(root);
   }
 
+  const classRows = CLASS_KEYS.map((classKey) => {
+    const def = CLASS_DEFS[classKey];
+    return `
+      <div class="row">
+        <label for="count_${classKey}">${def.label}</label>
+        <input id="count_${classKey}" data-class-key="${classKey}" type="number" min="0" max="90" />
+      </div>
+    `;
+  }).join("");
+
+  const descRows = CLASS_KEYS.map((classKey) => {
+    const def = CLASS_DEFS[classKey];
+    const colorHex = `#${def.color.toString(16).padStart(6, "0")}`;
+    return `<p class="class-desc"><span class="swatch" style="background:${colorHex}"></span><strong>${def.label}:</strong> ${def.description}</p>`;
+  }).join("");
+
   root.innerHTML = `
-    <h2>Arena + Classes</h2>
+    <h2>Pixel Arena Controls</h2>
     <div class="row">
       <label for="arenaWidth">Arena Width</label>
-      <input id="arenaWidth" type="number" min="420" max="2000" />
+      <input id="arenaWidth" type="number" min="420" max="2200" />
     </div>
     <div class="row">
       <label for="arenaHeight">Arena Height</label>
-      <input id="arenaHeight" type="number" min="420" max="2000" />
+      <input id="arenaHeight" type="number" min="420" max="2200" />
     </div>
-    <div class="row">
-      <label for="countTank">Tank Balls</label>
-      <input id="countTank" type="number" min="0" max="80" />
-    </div>
-    <div class="row">
-      <label for="countStriker">Striker Balls</label>
-      <input id="countStriker" type="number" min="0" max="80" />
-    </div>
-    <div class="row">
-      <label for="countMedic">Medic Balls</label>
-      <input id="countMedic" type="number" min="0" max="80" />
-    </div>
-    <div class="row">
-      <label for="countTrickster">Trickster Balls</label>
-      <input id="countTrickster" type="number" min="0" max="80" />
-    </div>
+    ${classRows}
     <div class="actions">
       <button id="applySetupBtn" type="button">Apply Setup + Reset</button>
     </div>
+    <div class="desc-title">Class Descriptions</div>
+    ${descRows}
     <div class="hint">R = reset | F = fast-forward</div>
+    <div class="hint">P = pause/resume</div>
   `;
 
   const arenaWidthEl = root.querySelector("#arenaWidth");
   const arenaHeightEl = root.querySelector("#arenaHeight");
-  const countTankEl = root.querySelector("#countTank");
-  const countStrikerEl = root.querySelector("#countStriker");
-  const countMedicEl = root.querySelector("#countMedic");
-  const countTricksterEl = root.querySelector("#countTrickster");
   const applyBtn = root.querySelector("#applySetupBtn");
+  const countInputs = root.querySelectorAll("[data-class-key]");
 
   arenaWidthEl.value = String(scene.setup.arenaWidth);
   arenaHeightEl.value = String(scene.setup.arenaHeight);
-  countTankEl.value = String(scene.setup.classCounts.tank);
-  countStrikerEl.value = String(scene.setup.classCounts.striker);
-  countMedicEl.value = String(scene.setup.classCounts.medic);
-  countTricksterEl.value = String(scene.setup.classCounts.trickster);
+  for (const input of countInputs) {
+    input.value = String(scene.setup.classCounts[input.dataset.classKey] ?? 0);
+  }
 
   applyBtn.addEventListener("click", () => {
+    const nextClassCounts = {};
+    for (const input of countInputs) {
+      nextClassCounts[input.dataset.classKey] = sanitizeCount(input.value);
+    }
+
     scene.applySetup({
       arenaWidth: sanitizeDimension(arenaWidthEl.value, scene.setup.arenaWidth),
       arenaHeight: sanitizeDimension(arenaHeightEl.value, scene.setup.arenaHeight),
-      classCounts: {
-        tank: sanitizeCount(countTankEl.value),
-        striker: sanitizeCount(countStrikerEl.value),
-        medic: sanitizeCount(countMedicEl.value),
-        trickster: sanitizeCount(countTricksterEl.value)
-      }
+      classCounts: nextClassCounts
     });
 
     arenaWidthEl.value = String(scene.setup.arenaWidth);
     arenaHeightEl.value = String(scene.setup.arenaHeight);
-    countTankEl.value = String(scene.setup.classCounts.tank);
-    countStrikerEl.value = String(scene.setup.classCounts.striker);
-    countMedicEl.value = String(scene.setup.classCounts.medic);
-    countTricksterEl.value = String(scene.setup.classCounts.trickster);
+    for (const input of countInputs) {
+      input.value = String(scene.setup.classCounts[input.dataset.classKey] ?? 0);
+    }
   });
 }
 
@@ -336,18 +428,22 @@ class MainScene extends Phaser.Scene {
     this.accumulator = 0;
     this.stepCounter = 0;
     this.fastForward = false;
+    this.paused = false;
     this.initialState = [];
     this.balls = [];
     this.setup = structuredClone(DEFAULT_SETUP);
+    this.effects = [];
+    this.simTime = 0;
+    this.lastDamageTimesByPair = new Map();
   }
 
   create() {
-    this.cameras.main.setBackgroundColor(0xffffff);
+    this.cameras.main.setBackgroundColor(0x1a1d26);
     this.graphics = this.add.graphics();
     this.hudText = this.add.text(12, 12, "", {
-      fontFamily: "monospace",
-      fontSize: "16px",
-      color: "#000000"
+      fontFamily: "Consolas, monospace",
+      fontSize: "15px",
+      color: "#f3f4f6"
     });
     this.hudText.setDepth(10);
 
@@ -356,6 +452,9 @@ class MainScene extends Phaser.Scene {
     });
     this.input.keyboard.on("keydown-F", () => {
       this.fastForward = !this.fastForward;
+    });
+    this.input.keyboard.on("keydown-P", () => {
+      this.paused = !this.paused;
     });
 
     buildControls(this);
@@ -394,13 +493,22 @@ class MainScene extends Phaser.Scene {
       ...ball,
       abilityState: { ...ball.abilityState }
     }));
+    this.effects = [];
     this.stepCounter = 0;
     this.accumulator = 0;
     this.fastForward = false;
+    this.paused = false;
+    this.simTime = 0;
+    this.lastDamageTimesByPair.clear();
     this.renderScene();
   }
 
   update(_time, delta) {
+    if (this.paused) {
+      this.renderScene();
+      return;
+    }
+
     this.accumulator += delta / 1000;
     this.accumulator = Math.min(this.accumulator, 0.25);
 
@@ -418,25 +526,28 @@ class MainScene extends Phaser.Scene {
   simulateStep(dt) {
     const aliveBalls = this.balls.filter((ball) => ball.alive).sort((a, b) => a.id - b.id);
     const pendingDamage = new Map();
+    const pendingHealing = new Map();
+    this.simTime += dt;
 
     for (const ball of aliveBalls) {
       this.applyPerStepAbilities(ball, dt);
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       this.resolveWallCollision(ball);
+      this.spawnTrail(ball);
     }
 
     for (let i = 0; i < aliveBalls.length; i += 1) {
       for (let j = i + 1; j < aliveBalls.length; j += 1) {
-        this.resolveBallCollision(aliveBalls[i], aliveBalls[j], pendingDamage);
+        this.resolveBallCollision(aliveBalls[i], aliveBalls[j], pendingDamage, pendingHealing);
       }
     }
 
     for (const ball of aliveBalls) {
       const damage = pendingDamage.get(ball.id) ?? 0;
-      ball.hp -= damage;
+      const healing = pendingHealing.get(ball.id) ?? 0;
+      ball.hp = clamp(ball.hp - damage + healing, 0, ball.maxHp);
       if (ball.hp <= 0) {
-        ball.hp = 0;
         ball.alive = false;
       }
     }
@@ -450,6 +561,7 @@ class MainScene extends Phaser.Scene {
       ball.vy = round6(ball.vy);
     }
 
+    this.updateEffects(dt);
     this.stepCounter += 1;
   }
 
@@ -458,6 +570,15 @@ class MainScene extends Phaser.Scene {
 
     if (def.regenPerSecond) {
       ball.hp = Math.min(ball.maxHp, ball.hp + def.regenPerSecond * dt);
+      if ((this.stepCounter + ball.id) % 28 === 0) {
+        this.effects.push({
+          type: "plus",
+          x: ball.x,
+          y: ball.y - ball.r - 7,
+          color: 0x66f39a,
+          life: 0.22
+        });
+      }
     }
 
     if (ball.classKey === "trickster") {
@@ -466,6 +587,37 @@ class MainScene extends Phaser.Scene {
         ball.vx *= def.dashMultiplier;
         ball.vy *= def.dashMultiplier;
         ball.abilityState.tricksterDashTimer = def.dashCooldown;
+        this.effects.push({
+          type: "ring",
+          x: ball.x,
+          y: ball.y,
+          color: 0xffdd66,
+          life: 0.35,
+          radius: ball.r
+        });
+      }
+    }
+
+    if (ball.classKey === "bulwark") {
+      if (ball.abilityState.bulwarkShieldTimeLeft > 0) {
+        ball.abilityState.bulwarkShieldTimeLeft = Math.max(
+          0,
+          ball.abilityState.bulwarkShieldTimeLeft - dt
+        );
+      } else {
+        ball.abilityState.bulwarkShieldCooldown -= dt;
+        if (ball.abilityState.bulwarkShieldCooldown <= 0) {
+          ball.abilityState.bulwarkShieldTimeLeft = def.shieldDuration;
+          ball.abilityState.bulwarkShieldCooldown = def.shieldCooldown;
+          this.effects.push({
+            type: "ring",
+            x: ball.x,
+            y: ball.y,
+            color: 0xb6f1ff,
+            life: 0.42,
+            radius: ball.r + 2
+          });
+        }
       }
     }
   }
@@ -476,25 +628,40 @@ class MainScene extends Phaser.Scene {
     const minY = ball.r;
     const maxY = this.setup.arenaHeight - ball.r;
     const wallBounceMult = CLASS_DEFS[ball.classKey].wallBounceMult ?? 1;
+    let bounced = false;
 
     if (ball.x < minX) {
       ball.x = minX;
       ball.vx = Math.abs(ball.vx) * wallBounceMult;
+      bounced = true;
     } else if (ball.x > maxX) {
       ball.x = maxX;
       ball.vx = -Math.abs(ball.vx) * wallBounceMult;
+      bounced = true;
     }
 
     if (ball.y < minY) {
       ball.y = minY;
       ball.vy = Math.abs(ball.vy) * wallBounceMult;
+      bounced = true;
     } else if (ball.y > maxY) {
       ball.y = maxY;
       ball.vy = -Math.abs(ball.vy) * wallBounceMult;
+      bounced = true;
+    }
+
+    if (bounced) {
+      this.effects.push({
+        type: "spark",
+        x: ball.x,
+        y: ball.y,
+        color: 0xd8dee9,
+        life: 0.2
+      });
     }
   }
 
-  resolveBallCollision(a, b, pendingDamage) {
+  resolveBallCollision(a, b, pendingDamage, pendingHealing) {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const minDist = a.r + b.r;
@@ -530,19 +697,86 @@ class MainScene extends Phaser.Scene {
     const rvy = b.vy - a.vy;
     const relVelN = rvx * nx + rvy * ny;
     const impact = Math.max(0, -relVelN);
-    const baseDamage = clamp(BASE_DAMAGE + DAMAGE_SCALE * impact, MIN_DAMAGE, MAX_DAMAGE);
 
-    const damageToA =
-      baseDamage *
-      CLASS_DEFS[b.classKey].outgoingDamageMult *
-      CLASS_DEFS[a.classKey].incomingDamageMult;
-    const damageToB =
-      baseDamage *
+    const aForwardSpeed = Math.max(0, a.vx * nx + a.vy * ny);
+    const bForwardSpeed = Math.max(0, -(b.vx * nx + b.vy * ny));
+    const aSpeedBonus = clamp((aForwardSpeed / MAX_SPEED) * SPEED_DAMAGE_SCALE, 0, SPEED_DAMAGE_BONUS_CAP);
+    const bSpeedBonus = clamp((bForwardSpeed / MAX_SPEED) * SPEED_DAMAGE_SCALE, 0, SPEED_DAMAGE_BONUS_CAP);
+
+    const pairKey = this.getPairKey(a.id, b.id);
+    const canDealDamage = this.canDealCollisionDamage(pairKey);
+
+    let damageFromA = 0;
+    let damageFromB = 0;
+    if (canDealDamage && impact >= IMPACT_DAMAGE_THRESHOLD) {
+      const impactDamage = clamp(BASE_DAMAGE + DAMAGE_SCALE * impact, MIN_DAMAGE, MAX_DAMAGE);
+      damageFromA = impactDamage * (1 + aSpeedBonus);
+      damageFromB = impactDamage * (1 + bSpeedBonus);
+    }
+
+    if (a.classKey === "sniper" && impact >= CLASS_DEFS.sniper.impactThreshold) {
+      damageFromA *= CLASS_DEFS.sniper.impactBonusMult;
+    }
+    if (b.classKey === "sniper" && impact >= CLASS_DEFS.sniper.impactThreshold) {
+      damageFromB *= CLASS_DEFS.sniper.impactBonusMult;
+    }
+
+    if (a.classKey === "striker" && a.hp / a.maxHp < 0.35) {
+      damageFromA *= 1.2;
+    }
+    if (b.classKey === "striker" && b.hp / b.maxHp < 0.35) {
+      damageFromB *= 1.2;
+    }
+
+    let damageToB =
+      damageFromA *
       CLASS_DEFS[a.classKey].outgoingDamageMult *
       CLASS_DEFS[b.classKey].incomingDamageMult;
+    let damageToA =
+      damageFromB *
+      CLASS_DEFS[b.classKey].outgoingDamageMult *
+      CLASS_DEFS[a.classKey].incomingDamageMult;
 
-    pendingDamage.set(a.id, (pendingDamage.get(a.id) ?? 0) + damageToA);
-    pendingDamage.set(b.id, (pendingDamage.get(b.id) ?? 0) + damageToB);
+    if (a.classKey === "bulwark" && a.abilityState.bulwarkShieldTimeLeft > 0) {
+      damageToA *= CLASS_DEFS.bulwark.shieldReductionMult;
+    }
+    if (b.classKey === "bulwark" && b.abilityState.bulwarkShieldTimeLeft > 0) {
+      damageToB *= CLASS_DEFS.bulwark.shieldReductionMult;
+    }
+
+    if (canDealDamage && (damageToA > 0 || damageToB > 0)) {
+      this.lastDamageTimesByPair.set(pairKey, this.simTime);
+      pendingDamage.set(a.id, (pendingDamage.get(a.id) ?? 0) + damageToA);
+      pendingDamage.set(b.id, (pendingDamage.get(b.id) ?? 0) + damageToB);
+    }
+
+    if (canDealDamage && a.classKey === "vampire") {
+      pendingHealing.set(
+        a.id,
+        (pendingHealing.get(a.id) ?? 0) + damageToB * CLASS_DEFS.vampire.lifesteal
+      );
+    }
+    if (canDealDamage && b.classKey === "vampire") {
+      pendingHealing.set(
+        b.id,
+        (pendingHealing.get(b.id) ?? 0) + damageToA * CLASS_DEFS.vampire.lifesteal
+      );
+    }
+
+    if (canDealDamage && a.classKey === "bulwark" && a.abilityState.bulwarkShieldTimeLeft > 0) {
+      pendingDamage.set(b.id, (pendingDamage.get(b.id) ?? 0) + damageToA * CLASS_DEFS.bulwark.thorns);
+    }
+    if (canDealDamage && b.classKey === "bulwark" && b.abilityState.bulwarkShieldTimeLeft > 0) {
+      pendingDamage.set(a.id, (pendingDamage.get(a.id) ?? 0) + damageToB * CLASS_DEFS.bulwark.thorns);
+    }
+
+    this.effects.push({
+      type: "spark",
+      x: (a.x + b.x) * 0.5,
+      y: (a.y + b.y) * 0.5,
+      color: 0xffffff,
+      life: clamp(0.14 + impact / 900, 0.14, 0.36)
+    });
 
     if (relVelN < 0) {
       const invMassA = 1 / a.mass;
@@ -569,37 +803,135 @@ class MainScene extends Phaser.Scene {
     }
   }
 
-  drawClassArt(ball) {
-    const cx = ball.x;
-    const cy = ball.y;
-    const r = ball.r;
+  getPairKey(idA, idB) {
+    return idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
+  }
 
-    this.graphics.lineStyle(2, 0x111111, 0.95);
+  canDealCollisionDamage(pairKey) {
+    const lastHitTime = this.lastDamageTimesByPair.get(pairKey);
+    if (lastHitTime == null) {
+      return true;
+    }
+    return this.simTime - lastHitTime >= COLLISION_DAMAGE_COOLDOWN;
+  }
+
+  spawnTrail(ball) {
+    const speed = Math.hypot(ball.vx, ball.vy);
+    if (speed < 200) {
+      return;
+    }
+    if ((this.stepCounter + ball.id) % 3 !== 0) {
+      return;
+    }
+    this.effects.push({
+      type: "trail",
+      x: ball.x,
+      y: ball.y,
+      color: ball.color,
+      life: 0.18
+    });
+  }
+
+  updateEffects(dt) {
+    for (const fx of this.effects) {
+      fx.life -= dt;
+    }
+    this.effects = this.effects.filter((fx) => fx.life > 0);
+  }
+
+  drawPixelBall(ball) {
+    const r = ball.r;
+    const step = PIXEL_SIZE;
+    for (let py = -r; py <= r; py += step) {
+      for (let px = -r; px <= r; px += step) {
+        if (px * px + py * py > r * r) {
+          continue;
+        }
+        this.graphics.fillStyle(ball.color, 1);
+        this.graphics.fillRect(ball.x + px, ball.y + py, step, step);
+      }
+    }
+
+    const edge = 0x111111;
+    this.graphics.fillStyle(edge, 1);
+    this.graphics.fillRect(ball.x - r, ball.y - r, r * 2, 1);
+    this.graphics.fillRect(ball.x - r, ball.y + r - 1, r * 2, 1);
+    this.graphics.fillRect(ball.x - r, ball.y - r, 1, r * 2);
+    this.graphics.fillRect(ball.x + r - 1, ball.y - r, 1, r * 2);
+  }
+
+  drawClassArt(ball) {
+    const cx = Math.round(ball.x);
+    const cy = Math.round(ball.y);
+    const r = ball.r;
+    const ink = 0x0b0f18;
+    this.graphics.fillStyle(ink, 0.95);
+
     if (ball.classKey === "tank") {
-      this.graphics.strokeRect(cx - r * 0.45, cy - r * 0.45, r * 0.9, r * 0.9);
-      this.graphics.lineBetween(cx - r * 0.7, cy, cx + r * 0.7, cy);
+      this.graphics.fillRect(cx - 4, cy - 4, 8, 8);
+      this.graphics.fillRect(cx - 8, cy - 1, 16, 2);
     } else if (ball.classKey === "striker") {
-      this.graphics.lineBetween(cx - r * 0.6, cy + r * 0.6, cx + r * 0.6, cy - r * 0.6);
-      this.graphics.lineBetween(cx - r * 0.1, cy + r * 0.6, cx + r * 0.6, cy - r * 0.1);
+      this.graphics.fillRect(cx + 2, cy - 7, 2, 6);
+      this.graphics.fillRect(cx - 4, cy - 1, 10, 2);
+      this.graphics.fillRect(cx - 8, cy + 5, 2, 2);
     } else if (ball.classKey === "medic") {
-      this.graphics.lineBetween(cx - r * 0.5, cy, cx + r * 0.5, cy);
-      this.graphics.lineBetween(cx, cy - r * 0.5, cx, cy + r * 0.5);
-      this.graphics.strokeCircle(cx, cy, r * 0.45);
+      this.graphics.fillRect(cx - 1, cy - 6, 2, 12);
+      this.graphics.fillRect(cx - 6, cy - 1, 12, 2);
     } else if (ball.classKey === "trickster") {
-      this.graphics.strokeTriangle(
-        cx,
-        cy - r * 0.6,
-        cx - r * 0.6,
-        cy + r * 0.55,
-        cx + r * 0.6,
-        cy + r * 0.55
-      );
+      this.graphics.fillRect(cx - 6, cy + 2, 12, 2);
+      this.graphics.fillRect(cx - 2, cy - 6, 2, 8);
+      this.graphics.fillRect(cx + 2, cy - 6, 2, 8);
+    } else if (ball.classKey === "sniper") {
+      this.graphics.fillRect(cx - 7, cy - 1, 14, 2);
+      this.graphics.fillRect(cx + 6, cy - 2, 2, 4);
+    } else if (ball.classKey === "vampire") {
+      this.graphics.fillRect(cx - 5, cy - 4, 3, 8);
+      this.graphics.fillRect(cx + 2, cy - 4, 3, 8);
+      this.graphics.fillRect(cx - 2, cy + 2, 4, 4);
+    } else if (ball.classKey === "bulwark") {
+      this.graphics.fillRect(cx - 6, cy - 5, 12, 10);
+      this.graphics.fillStyle(0xbfd4da, 0.9);
+      this.graphics.fillRect(cx - 1, cy - 3, 2, 6);
+    }
+  }
+
+  drawEffects() {
+    for (const fx of this.effects) {
+      const alpha = clamp(fx.life * 4, 0, 1);
+      if (fx.type === "trail") {
+        this.graphics.fillStyle(fx.color, alpha * 0.5);
+        this.graphics.fillRect(fx.x - 2, fx.y - 2, 4, 4);
+      } else if (fx.type === "spark") {
+        this.graphics.fillStyle(fx.color, alpha);
+        this.graphics.fillRect(fx.x - 1, fx.y - 1, 3, 3);
+        this.graphics.fillRect(fx.x - 5, fx.y - 1, 2, 2);
+        this.graphics.fillRect(fx.x + 3, fx.y - 1, 2, 2);
+        this.graphics.fillRect(fx.x - 1, fx.y - 5, 2, 2);
+        this.graphics.fillRect(fx.x - 1, fx.y + 3, 2, 2);
+      } else if (fx.type === "ring") {
+        this.graphics.lineStyle(2, fx.color, alpha);
+        this.graphics.strokeCircle(fx.x, fx.y, (fx.radius ?? 10) + (1 - alpha) * 6);
+      } else if (fx.type === "plus") {
+        this.graphics.fillStyle(fx.color, alpha);
+        this.graphics.fillRect(fx.x - 1, fx.y - 4, 2, 8);
+        this.graphics.fillRect(fx.x - 4, fx.y - 1, 8, 2);
+      }
     }
   }
 
   renderScene() {
     this.graphics.clear();
-    this.graphics.lineStyle(BORDER_THICKNESS, 0x000000, 1);
+
+    this.graphics.fillStyle(0x202430, 1);
+    this.graphics.fillRect(0, 0, this.setup.arenaWidth, this.setup.arenaHeight);
+    this.graphics.fillStyle(0x232838, 1);
+    for (let y = 0; y < this.setup.arenaHeight; y += 24) {
+      for (let x = (y / 24) % 2 === 0 ? 0 : 12; x < this.setup.arenaWidth; x += 24) {
+        this.graphics.fillRect(x, y, 12, 12);
+      }
+    }
+
+    this.graphics.lineStyle(BORDER_THICKNESS, 0xbec5d0, 1);
     this.graphics.strokeRect(
       BORDER_THICKNESS / 2,
       BORDER_THICKNESS / 2,
@@ -608,34 +940,44 @@ class MainScene extends Phaser.Scene {
     );
 
     for (const ball of this.balls) {
-      this.graphics.fillStyle(ball.color, 1);
-      this.graphics.fillCircle(ball.x, ball.y, ball.r);
-      this.graphics.lineStyle(2, 0x111111, 0.9);
-      this.graphics.strokeCircle(ball.x, ball.y, ball.r);
+      this.drawPixelBall(ball);
       this.drawClassArt(ball);
 
+      if (ball.classKey === "bulwark" && ball.abilityState.bulwarkShieldTimeLeft > 0) {
+        this.graphics.lineStyle(2, 0xa8f0ff, 0.8);
+        this.graphics.strokeCircle(ball.x, ball.y, ball.r + 4);
+      }
+
       const barWidth = ball.r * 2;
-      const barHeight = 5;
+      const barHeight = 4;
       const hpRatio = clamp(ball.hp / ball.maxHp, 0, 1);
       const barX = ball.x - barWidth / 2;
-      const barY = ball.y - ball.r - 12;
+      const barY = ball.y - ball.r - 11;
 
-      this.graphics.fillStyle(0x111111, 1);
+      this.graphics.fillStyle(0x101316, 1);
       this.graphics.fillRect(barX, barY, barWidth, barHeight);
       this.graphics.fillStyle(0x35c94a, 1);
       this.graphics.fillRect(barX + 1, barY + 1, (barWidth - 2) * hpRatio, barHeight - 2);
-      this.graphics.lineStyle(1, 0x000000, 1);
-      this.graphics.strokeRect(barX, barY, barWidth, barHeight);
     }
 
-    const classSummary = CLASS_KEYS.map(
+    this.drawEffects();
+
+    const setupSummary = CLASS_KEYS.map(
       (classKey) => `${CLASS_DEFS[classKey].label}:${this.setup.classCounts[classKey]}`
     ).join(" ");
 
+    const aliveSummary = CLASS_KEYS.map((classKey) => {
+      const aliveCount = this.balls.reduce(
+        (count, ball) => (ball.classKey === classKey ? count + 1 : count),
+        0
+      );
+      return `${CLASS_DEFS[classKey].label}:${aliveCount}`;
+    }).join(" ");
+
     this.hudText.setText(
-      `step: ${this.stepCounter}\nalive: ${this.balls.length}\nsize: ${this.setup.arenaWidth}x${this.setup.arenaHeight}\n${classSummary}\nfast-forward: ${
+      `step:${this.stepCounter}  alive:${this.balls.length}  size:${this.setup.arenaWidth}x${this.setup.arenaHeight}\nsetup:${setupSummary}\nalive:${aliveSummary}\nfast-forward:${
         this.fastForward ? "ON" : "OFF"
-      }`
+      }  paused:${this.paused ? "ON" : "OFF"}`
     );
   }
 }
@@ -644,7 +986,10 @@ const config = {
   type: Phaser.AUTO,
   width: DEFAULT_SETUP.arenaWidth,
   height: DEFAULT_SETUP.arenaHeight,
-  backgroundColor: "#ffffff",
+  backgroundColor: "#1a1d26",
+  pixelArt: true,
+  antialias: false,
+  roundPixels: true,
   scene: MainScene
 };
 
