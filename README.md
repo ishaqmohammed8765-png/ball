@@ -12,12 +12,13 @@ Deterministic auto-battler simulation with custom circle physics (no RNG).
 ## Controls
 
 - `Reset`: reset to exact deterministic initial state.
-- `Balls`: choose how many balls to spawn (1-30), then press `Reset` to apply.
+- `Class Loadout`: set count per class; total count becomes the spawned ball count.
+- `Balls`: read-only total derived from class loadout.
 - `Arena`: switch between Small/Medium/Large arenas, then press `Reset` to apply.
 - `Fast-forward (8x)`: run 8 fixed steps per render refresh.
 - `Run 10,000-step Hash`: executes deterministic test on a fresh sim and prints hash.
 - `Class legend`: each class card shows its short label and built-in ability.
-- Late-fight pacing: collision damage ramps with elapsed time, each damaging hit builds temporary attacker momentum, and a pulsing center hazard activates in overtime.
+- Combat pacing: collision damage ramps with elapsed time and each damaging hit builds temporary attacker momentum.
 
 ## Determinism Rules
 

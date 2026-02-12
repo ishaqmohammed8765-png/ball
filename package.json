@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:determinism": "node scripts/determinism-test.mjs"
+    "test:determinism": "node scripts/determinism-test.mjs",
+    "test:determinism:py": "python scripts/determinism_test.py"
   }
 }

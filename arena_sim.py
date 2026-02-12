@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
-from math import pi, sin, sqrt
+from math import sqrt
 from typing import Dict, List, Tuple
 
 
@@ -64,17 +64,13 @@ class SimConfig:
     dash_speed: float = 320.0
     slow_duration_seconds: float = 1.5
     slow_multiplier: float = 0.6
-    core_hazard_start_seconds: float = 18.0
-    core_hazard_base_radius: float = 56.0
-    core_hazard_pulse_amplitude: float = 24.0
-    core_hazard_pulse_frequency: float = 1.4
-    core_hazard_dps: float = 13.0
     tank_hp_multiplier: float = 1.5
     tank_speed_multiplier: float = 0.8
     spiky_outgoing_multiplier: float = 1.3
     spiky_incoming_multiplier: float = 1.1
     vampiric_heal_ratio: float = 0.2
     ball_count: int = 18
+    ability_sequence: Tuple[AbilityType, ...] = ()
 
 
 @dataclass
@@ -236,6 +232,17 @@ def resolve_initial_overlaps(balls: List[Ball]) -> None:
 
 def create_initial_balls(cfg: SimConfig) -> List[Ball]:
     balls: List[Ball] = []
+    ability_sequence = []
+    for ability in cfg.ability_sequence:
+        if isinstance(ability, AbilityType):
+            ability_sequence.append(ability)
+            continue
+        try:
+            ability_sequence.append(AbilityType(str(ability)))
+        except ValueError:
+            continue
+    if len(ability_sequence) == 0:
+        ability_sequence = list(ABILITY_ORDER)
     padding = cfg.ball_radius + 24.0
     usable_width = max(0.0, cfg.arena_width - (padding * 2.0))
     usable_height = max(0.0, cfg.arena_height - (padding * 2.0))
@@ -255,7 +262,7 @@ def create_initial_balls(cfg: SimConfig) -> List[Ball]:
         x = start_x + (col * spacing_x)
         y = start_y + (row * spacing_y)
         vx, vy = get_initial_velocity(ball_id)
-        ability = ABILITY_ORDER[ball_id % len(ABILITY_ORDER)]
+        ability = ability_sequence[ball_id % len(ability_sequence)]
         balls.append(create_ball_base(ball_id, x, y, vx, vy, ability, cfg))
 
     resolve_initial_overlaps(balls)
@@ -344,26 +351,6 @@ class ArenaSimulation:
         if ball.damage_stack <= EPSILON:
             return
         ball.damage_stack = max(0.0, ball.damage_stack - (self.config.damage_stack_decay_per_second * dt))
-
-    def _core_hazard_radius(self) -> float:
-        cfg = self.config
-        if self.time < cfg.core_hazard_start_seconds:
-            return 0.0
-        hazard_time = self.time - cfg.core_hazard_start_seconds
-        # Deterministic pulsing center hazard to force late-game engagement.
-        pulse = (sin(hazard_time * cfg.core_hazard_pulse_frequency * 2.0 * pi) + 1.0) * 0.5
-        return cfg.core_hazard_base_radius + (cfg.core_hazard_pulse_amplitude * pulse)
-
-    def _apply_core_hazard(self, ball: Ball, dt: float) -> None:
-        radius = self._core_hazard_radius()
-        if radius <= EPSILON:
-            return
-        center_x = self.config.arena_width * 0.5
-        center_y = self.config.arena_height * 0.5
-        dx = ball.x - center_x
-        dy = ball.y - center_y
-        if (dx * dx) + (dy * dy) <= (radius * radius):
-            ball.hp -= self.config.core_hazard_dps * dt
 
     def _outgoing_multiplier(self, ball: Ball) -> float:
         if ball.ability_type == AbilityType.SPIKY:
@@ -524,11 +511,6 @@ class ArenaSimulation:
             if a.hp <= 0.0 or b.hp <= 0.0:
                 continue
             self._resolve_collision_pair(a, b)
-
-        for ball in self.balls:
-            if ball.hp <= 0.0:
-                continue
-            self._apply_core_hazard(ball, dt)
 
         self.balls = [ball for ball in self.balls if ball.hp > 0.0]
 

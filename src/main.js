@@ -1,4 +1,9 @@
-import { ArenaSimulation, ABILITY_ORDER, ABILITY_LABEL, CLASS_PROFILE } from "./sim.js";
+const arenaApi = globalThis.__ARENA_SIM__;
+if (!arenaApi) {
+  throw new Error("Simulation API is not loaded. Ensure sim.js runs before main.js.");
+}
+
+const { ArenaSimulation, ABILITY_ORDER, ABILITY_LABEL, CLASS_PROFILE } = arenaApi;
 
 const canvas = document.getElementById("arenaCanvas");
 const ctx = canvas.getContext("2d");
@@ -9,14 +14,26 @@ const fastForwardToggle = document.getElementById("fastForwardToggle");
 const determinismBtn = document.getElementById("determinismBtn");
 const statusLine = document.getElementById("statusLine");
 const classLegend = document.getElementById("classLegend");
+const classPicker = document.getElementById("classPicker");
 
-const minBallCount = 1;
-const maxBallCount = 30;
+const maxPerClass = 30;
+const defaultPerClass = 3;
+
 const ARENA_PRESETS = Object.freeze({
-  small: Object.freeze({ width: 760, height: 460, label: "Small" }),
+  small: Object.freeze({ width: 560, height: 320, label: "Small" }),
   medium: Object.freeze({ width: 920, height: 600, label: "Medium" }),
   large: Object.freeze({ width: 1180, height: 760, label: "Large" })
 });
+
+function defaultLoadout() {
+  const loadout = {};
+  for (const abilityType of ABILITY_ORDER) {
+    loadout[abilityType] = defaultPerClass;
+  }
+  return loadout;
+}
+
+let classLoadout = defaultLoadout();
 
 function getArenaPreset() {
   const key = arenaSizeSelect?.value ?? "medium";
@@ -24,9 +41,34 @@ function getArenaPreset() {
   return { key, preset };
 }
 
+function buildAbilitySequence() {
+  const sequence = [];
+  for (const abilityType of ABILITY_ORDER) {
+    const count = classLoadout[abilityType] ?? 0;
+    for (let i = 0; i < count; i += 1) {
+      sequence.push(abilityType);
+    }
+  }
+
+  if (sequence.length === 0) {
+    sequence.push(ABILITY_ORDER[0]);
+  }
+
+  return sequence;
+}
+
+function getCurrentComposition() {
+  const abilitySequence = buildAbilitySequence();
+  const ballCount = abilitySequence.length;
+  ballCountInput.value = String(ballCount);
+  return { abilitySequence, ballCount };
+}
+
 const initialPreset = getArenaPreset().preset;
+const initialComposition = getCurrentComposition();
 let sim = new ArenaSimulation({
-  ballCount: 18,
+  ballCount: initialComposition.ballCount,
+  abilitySequence: initialComposition.abilitySequence,
   arenaWidth: initialPreset.width,
   arenaHeight: initialPreset.height
 });
@@ -79,16 +121,25 @@ function renderClassLegend() {
   }).join("");
 }
 
-function parseBallCount() {
-  const parsed = Number.parseInt(ballCountInput.value, 10);
-  if (!Number.isFinite(parsed)) return 18;
-  return Math.max(minBallCount, Math.min(maxBallCount, parsed));
+function renderClassPicker() {
+  classPicker.innerHTML = ABILITY_ORDER.map((abilityType) => {
+    const profile = CLASS_PROFILE[abilityType];
+    const value = classLoadout[abilityType] ?? 0;
+    return `<label class="class-picker-item" for="classCount-${abilityType}"><span>${profile.className}</span><input id="classCount-${abilityType}" data-ability="${abilityType}" type="number" min="0" max="${maxPerClass}" step="1" value="${value}" /></label>`;
+  }).join("");
 }
 
-function applyBallCountInput() {
-  const ballCount = parseBallCount();
-  ballCountInput.value = String(ballCount);
-  return ballCount;
+function syncLoadoutFromInputs() {
+  const inputs = classPicker.querySelectorAll("input[data-ability]");
+  for (const input of inputs) {
+    const ability = input.dataset.ability;
+    const parsed = Number.parseInt(input.value, 10);
+    const value = Number.isFinite(parsed) ? Math.max(0, Math.min(maxPerClass, parsed)) : 0;
+    classLoadout[ability] = value;
+    input.value = String(value);
+  }
+  const { ballCount } = getCurrentComposition();
+  updateStatus(`Class loadout updated. Total balls: ${ballCount}. Press Reset to apply.`);
 }
 
 function drawHud(stepCount, aliveCount) {
@@ -104,13 +155,19 @@ function drawBall(ball) {
   const color = colorForId(ball.id);
   const hpPct = Math.max(0, Math.min(1, ball.hp / ball.maxHp));
 
+  const fill = ctx.createRadialGradient(ball.x - 5, ball.y - 6, 4, ball.x, ball.y, ball.radius);
+  fill.addColorStop(0, "rgba(255,255,255,0.95)");
+  fill.addColorStop(0.32, color);
+  fill.addColorStop(1, "rgba(10,10,10,0.86)");
+
   ctx.beginPath();
   ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
-  ctx.fillStyle = color;
+  ctx.fillStyle = fill;
   ctx.fill();
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#111";
   ctx.stroke();
+
   drawAbilityArt(ball);
 
   const barWidth = ball.radius * 2;
@@ -136,24 +193,24 @@ function drawBall(ball) {
 }
 
 function drawTankArt(ball) {
-  ctx.strokeStyle = "rgba(15,23,42,0.88)";
+  ctx.strokeStyle = "rgba(15,23,42,0.95)";
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.arc(ball.x, ball.y, ball.radius + 2, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = "rgba(30,41,59,0.5)";
-  ctx.fillRect(ball.x - 4, ball.y - ball.radius - 4, 8, 6);
+  ctx.fillStyle = "rgba(15,23,42,0.62)";
+  ctx.fillRect(ball.x - 5, ball.y - 4, 10, 8);
 }
 
 function drawSpikyArt(ball) {
-  const spikes = 10;
-  ctx.strokeStyle = "rgba(120,53,15,0.9)";
+  const spikes = 12;
+  ctx.strokeStyle = "rgba(120,53,15,0.98)";
   ctx.lineWidth = 2;
   for (let i = 0; i < spikes; i += 1) {
     const angle = (i / spikes) * Math.PI * 2;
-    const inner = ball.radius;
-    const outer = ball.radius + 6;
+    const inner = ball.radius - 2;
+    const outer = ball.radius + 7;
     const sx = ball.x + (Math.cos(angle) * inner);
     const sy = ball.y + (Math.sin(angle) * inner);
     const ex = ball.x + (Math.cos(angle) * outer);
@@ -166,30 +223,31 @@ function drawSpikyArt(ball) {
 }
 
 function drawVampiricArt(ball) {
-  const orbiters = 3;
-  const orbitRadius = ball.radius + 4;
+  const orbiters = 4;
+  const orbitRadius = ball.radius + 5;
   for (let i = 0; i < orbiters; i += 1) {
-    const angle = (sim.time * 2.8) + ((i / orbiters) * Math.PI * 2) + (ball.id * 0.1);
+    const angle = (sim.time * 3.4) + ((i / orbiters) * Math.PI * 2) + (ball.id * 0.12);
     const x = ball.x + (Math.cos(angle) * orbitRadius);
     const y = ball.y + (Math.sin(angle) * orbitRadius);
     ctx.beginPath();
-    ctx.arc(x, y, 2.2, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(127,29,29,0.95)";
+    ctx.arc(x, y, 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(153,27,27,0.96)";
     ctx.fill();
   }
 }
 
 function drawShieldedArt(ball) {
-  ctx.strokeStyle = "rgba(30,64,175,0.9)";
+  const shimmer = 0.7 + (Math.sin(sim.time * 6 + ball.id) * 0.25);
+  ctx.strokeStyle = `rgba(30,64,175,${shimmer.toFixed(3)})`;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, ball.radius + 5, Math.PI * 0.05, Math.PI * 1.95);
+  ctx.arc(ball.x, ball.y, ball.radius + 6, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.strokeStyle = "rgba(147,197,253,0.75)";
+  ctx.strokeStyle = "rgba(147,197,253,0.85)";
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(ball.x - 3, ball.y - 3, ball.radius + 3, Math.PI * 1.1, Math.PI * 1.6);
+  ctx.arc(ball.x - 3, ball.y - 3, ball.radius + 3, Math.PI * 1.1, Math.PI * 1.62);
   ctx.stroke();
 }
 
@@ -199,10 +257,10 @@ function drawDashArt(ball) {
   const ux = ball.vx / speed;
   const uy = ball.vy / speed;
   ctx.lineWidth = 2;
-  for (let i = 1; i <= 3; i += 1) {
+  for (let i = 1; i <= 4; i += 1) {
     const startDist = ball.radius + (i * 4);
-    const endDist = startDist + 6;
-    ctx.strokeStyle = `rgba(2,132,199,${0.38 - (i * 0.08)})`;
+    const endDist = startDist + 7;
+    ctx.strokeStyle = `rgba(2,132,199,${0.42 - (i * 0.08)})`;
     ctx.beginPath();
     ctx.moveTo(ball.x - (ux * startDist), ball.y - (uy * startDist));
     ctx.lineTo(ball.x - (ux * endDist), ball.y - (uy * endDist));
@@ -211,15 +269,22 @@ function drawDashArt(ball) {
 }
 
 function drawSlowArt(ball) {
-  const r = ball.radius + 3;
-  ctx.strokeStyle = "rgba(6,95,70,0.9)";
-  ctx.lineWidth = 1.8;
+  const rings = [ball.radius + 1.5, ball.radius + 4.5];
+  ctx.strokeStyle = "rgba(6,95,70,0.92)";
+  for (const r of rings) {
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.lineWidth = 1.7;
   for (let i = 0; i < 3; i += 1) {
     const angle = (Math.PI / 3) * i;
-    const x1 = ball.x + (Math.cos(angle) * r);
-    const y1 = ball.y + (Math.sin(angle) * r);
-    const x2 = ball.x - (Math.cos(angle) * r);
-    const y2 = ball.y - (Math.sin(angle) * r);
+    const x1 = ball.x + (Math.cos(angle) * (ball.radius + 5));
+    const y1 = ball.y + (Math.sin(angle) * (ball.radius + 5));
+    const x2 = ball.x - (Math.cos(angle) * (ball.radius + 5));
+    const y2 = ball.y - (Math.sin(angle) * (ball.radius + 5));
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
@@ -252,34 +317,10 @@ function drawAbilityArt(ball) {
   }
 }
 
-function drawCoreHazard() {
-  const core = sim.getCoreHazardState();
-  if (!core.active) return;
-
-  const pulseGradient = ctx.createRadialGradient(core.x, core.y, core.radius * 0.25, core.x, core.y, core.radius);
-  pulseGradient.addColorStop(0, "rgba(239,68,68,0.42)");
-  pulseGradient.addColorStop(1, "rgba(239,68,68,0.02)");
-  ctx.fillStyle = pulseGradient;
-  ctx.beginPath();
-  ctx.arc(core.x, core.y, core.radius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(127,29,29,0.9)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(core.x, core.y, core.radius, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.fillStyle = "rgba(127,29,29,0.95)";
-  ctx.font = "11px Courier New";
-  ctx.fillText("Core Surge", core.x - 28, core.y + 4);
-}
-
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const state = sim.getRenderState();
   drawHud(state.stepCount, state.aliveCount);
-  drawCoreHazard();
   ctx.font = "10px Courier New";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -316,17 +357,18 @@ function frame(now) {
 }
 
 function resetSimulation() {
-  const ballCount = applyBallCountInput();
   const { preset } = getArenaPreset();
+  const composition = getCurrentComposition();
   applyCanvasSize(preset.width, preset.height);
   sim = new ArenaSimulation({
-    ballCount,
+    ballCount: composition.ballCount,
+    abilitySequence: composition.abilitySequence,
     arenaWidth: preset.width,
     arenaHeight: preset.height
   });
   accumulatorMs = 0;
   lastTimestamp = performance.now();
-  updateStatus(`Simulation reset with ${ballCount} balls on ${preset.label} arena.`);
+  updateStatus(`Simulation reset with ${composition.ballCount} balls on ${preset.label} arena.`);
 }
 
 function setFastForward(enabled) {
@@ -334,16 +376,17 @@ function setFastForward(enabled) {
 }
 
 function runDeterminismHash() {
-  const ballCount = applyBallCountInput();
   const { preset } = getArenaPreset();
+  const composition = getCurrentComposition();
   const testSim = new ArenaSimulation({
-    ballCount,
+    ballCount: composition.ballCount,
+    abilitySequence: composition.abilitySequence,
     arenaWidth: preset.width,
     arenaHeight: preset.height
   });
   testSim.stepMany(10000);
   const hash = testSim.hashState();
-  updateStatus(`10,000-step hash (${ballCount} balls, ${preset.label}): ${hash}`);
+  updateStatus(`10,000-step hash (${composition.ballCount} balls, ${preset.label}): ${hash}`);
 }
 
 resetBtn.addEventListener("click", resetSimulation);
@@ -352,14 +395,13 @@ fastForwardToggle.addEventListener("change", () => {
   updateStatus(`Fast-forward ${fastForwardToggle.checked ? "enabled" : "disabled"}.`);
 });
 determinismBtn.addEventListener("click", runDeterminismHash);
-ballCountInput.addEventListener("change", () => {
-  const ballCount = applyBallCountInput();
-  updateStatus(`Ball count set to ${ballCount}. Press Reset to apply.`);
-});
 arenaSizeSelect.addEventListener("change", () => {
   const { preset } = getArenaPreset();
   updateStatus(`Arena set to ${preset.label}. Press Reset to apply.`);
 });
+
+classPicker.addEventListener("change", syncLoadoutFromInputs);
+classPicker.addEventListener("input", syncLoadoutFromInputs);
 
 window.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
@@ -381,7 +423,10 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-updateStatus("Simulation running.");
+ballCountInput.readOnly = true;
+renderClassPicker();
 renderClassLegend();
 applyCanvasSize(initialPreset.width, initialPreset.height);
+updateStatus(`Simulation running with ${initialComposition.ballCount} balls.`);
 requestAnimationFrame(frame);
+

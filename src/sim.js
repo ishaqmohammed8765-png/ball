@@ -83,17 +83,13 @@ const DEFAULT_CONFIG = Object.freeze({
   dashSpeed: 320,
   slowDurationSeconds: 1.5,
   slowMultiplier: 0.6,
-  coreHazardStartSeconds: 18,
-  coreHazardBaseRadius: 56,
-  coreHazardPulseAmplitude: 24,
-  coreHazardPulseFrequency: 1.4,
-  coreHazardDps: 13,
   tankHpMultiplier: 1.5,
   tankSpeedMultiplier: 0.8,
   spikyOutgoingMultiplier: 1.3,
   spikyIncomingMultiplier: 1.1,
   vampiricHealRatio: 0.2,
-  ballCount: 18
+  ballCount: 18,
+  abilitySequence: Object.freeze([])
 });
 
 function quantize(value) {
@@ -237,13 +233,15 @@ function createInitialBalls(cfg) {
   const startX = padding;
   const startY = padding;
 
+  const abilitySequence = cfg.abilitySequence.length > 0 ? cfg.abilitySequence : ABILITY_ORDER;
+
   for (let id = 0; id < cfg.ballCount; id += 1) {
     const row = Math.floor(id / columns);
     const col = id % columns;
     const x = startX + (col * spacingX);
     const y = startY + (row * spacingY);
     const { vx, vy } = getInitialVelocity(id);
-    const abilityType = ABILITY_ORDER[id % ABILITY_ORDER.length];
+    const abilityType = abilitySequence[id % abilitySequence.length];
     const ball = createBallBase(id, x, y, vx, vy, abilityType, cfg);
     limitVelocity(ball, Math.min(cfg.speedClamp, ball.maxSpeed));
     balls.push(ball);
@@ -345,25 +343,6 @@ function gainDamageStack(ball, dealtDamage, cfg) {
 function decayDamageStack(ball, dt, cfg) {
   if (ball.damageStack <= EPSILON) return;
   ball.damageStack = Math.max(0, ball.damageStack - (cfg.damageStackDecayPerSecond * dt));
-}
-
-function computeCoreHazardRadius(time, cfg) {
-  if (time < cfg.coreHazardStartSeconds) return 0;
-  const hazardTime = time - cfg.coreHazardStartSeconds;
-  const pulse = (Math.sin(hazardTime * cfg.coreHazardPulseFrequency * Math.PI * 2) + 1) * 0.5;
-  return cfg.coreHazardBaseRadius + (cfg.coreHazardPulseAmplitude * pulse);
-}
-
-function applyCoreHazard(ball, time, dt, cfg) {
-  const radius = computeCoreHazardRadius(time, cfg);
-  if (radius <= EPSILON) return;
-  const centerX = cfg.arenaWidth * 0.5;
-  const centerY = cfg.arenaHeight * 0.5;
-  const dx = ball.x - centerX;
-  const dy = ball.y - centerY;
-  if ((dx * dx) + (dy * dy) <= (radius * radius)) {
-    ball.hp -= cfg.coreHazardDps * dt;
-  }
 }
 
 function outgoingMultiplier(ball, cfg) {
@@ -517,7 +496,11 @@ function createStateHasher() {
 
 export class ArenaSimulation {
   constructor(config = {}) {
-    this.config = Object.freeze({ ...DEFAULT_CONFIG, ...config });
+    this.config = Object.freeze({
+      ...DEFAULT_CONFIG,
+      ...config,
+      abilitySequence: sanitizeAbilitySequence(config.abilitySequence)
+    });
     // Reused buffers to reduce per-step allocations and GC pressure.
     this._pairBuffer = [];
     this._renderState = { stepCount: 0, aliveCount: 0, balls: [] };
@@ -533,6 +516,9 @@ export class ArenaSimulation {
   step() {
     const cfg = this.config;
     const dt = cfg.fixedDt;
+
+    // Determinism: always process in stable id order.
+    this.balls.sort((a, b) => a.id - b.id);
 
     for (const ball of this.balls) {
       if (ball.cooldown > 0) ball.cooldown = Math.max(0, ball.cooldown - dt);
@@ -574,11 +560,6 @@ export class ArenaSimulation {
       if (!a || !b) continue;
       if (a.hp <= 0 || b.hp <= 0) continue;
       resolveCollisionPair(a, b, cfg, this.time);
-    }
-
-    for (const ball of this.balls) {
-      if (ball.hp <= 0) continue;
-      applyCoreHazard(ball, this.time, dt, cfg);
     }
 
     // In-place compaction preserves deterministic order and avoids extra arrays.
@@ -651,16 +632,6 @@ export class ArenaSimulation {
     };
   }
 
-  getCoreHazardState() {
-    const radius = computeCoreHazardRadius(this.time, this.config);
-    return {
-      active: radius > EPSILON,
-      radius,
-      x: this.config.arenaWidth * 0.5,
-      y: this.config.arenaHeight * 0.5
-    };
-  }
-
   getRenderState() {
     this._renderState.stepCount = this.stepCount;
     this._renderState.aliveCount = this.balls.length;
@@ -668,3 +639,22 @@ export class ArenaSimulation {
     return this._renderState;
   }
 }
+
+function sanitizeAbilitySequence(sequence) {
+  if (!Array.isArray(sequence)) return [];
+  const valid = [];
+  for (const ability of sequence) {
+    if (Object.values(AbilityType).includes(ability)) {
+      valid.push(ability);
+    }
+  }
+  return Object.freeze(valid);
+}
+
+globalThis.__ARENA_SIM__ = Object.freeze({
+  ArenaSimulation,
+  AbilityType,
+  ABILITY_ORDER,
+  ABILITY_LABEL,
+  CLASS_PROFILE
+});
