@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "npm --prefix phaser_app run dev",
     "build": "npm --prefix phaser_app run build",
-    "preview": "npm --prefix phaser_app run preview"
+    "preview": "npm --prefix phaser_app run preview",
+    "serve:dist": "npx --yes serve dist -s -l 4173",
+    "deploy:vercel": "npm run build && npx --yes vercel deploy dist --prod",
+    "deploy:netlify": "npm run build && npx --yes netlify-cli deploy --dir=dist --prod",
+    "deploy:cloudflare": "npm run build && npx --yes wrangler pages deploy dist"
   },
   "dependencies": {
     "phaser": "^3.90.0"

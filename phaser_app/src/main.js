@@ -15,6 +15,8 @@ const IMPACT_DAMAGE_THRESHOLD = 18;
 const SPEED_DAMAGE_SCALE = 1.2;
 const SPEED_DAMAGE_BONUS_CAP = 1.25;
 const COLLISION_DAMAGE_COOLDOWN = 0.09;
+const COLLISION_DAMAGE_CACHE_TTL = 2.2;
+const MAX_EFFECTS = 1100;
 
 const FAST_FORWARD_STEPS = 4;
 const NORMAL_STEPS = 1;
@@ -147,6 +149,60 @@ const DIRECTION_VECTORS = [
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const round6 = (value) => Math.round(value * POSITION_ROUNDING) / POSITION_ROUNDING;
+const classColorHex = (classKey) => `#${CLASS_DEFS[classKey].color.toString(16).padStart(6, "0")}`;
+
+function safeEncodeBase64(value) {
+  return btoa(unescape(encodeURIComponent(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function safeDecodeBase64(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return decodeURIComponent(escape(atob(normalized + padding)));
+}
+
+function encodeSetupToken(setup) {
+  const payload = {
+    w: sanitizeDimension(setup.arenaWidth, DEFAULT_SETUP.arenaWidth),
+    h: sanitizeDimension(setup.arenaHeight, DEFAULT_SETUP.arenaHeight),
+    c: CLASS_KEYS.reduce((acc, classKey) => {
+      acc[classKey] = sanitizeCount(setup.classCounts[classKey]);
+      return acc;
+    }, {})
+  };
+  return safeEncodeBase64(JSON.stringify(payload));
+}
+
+function decodeSetupToken(token) {
+  try {
+    const parsed = JSON.parse(safeDecodeBase64(token));
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const classCounts = {};
+    for (const classKey of CLASS_KEYS) {
+      classCounts[classKey] = sanitizeCount(parsed.c?.[classKey]);
+    }
+    return {
+      arenaWidth: sanitizeDimension(parsed.w, DEFAULT_SETUP.arenaWidth),
+      arenaHeight: sanitizeDimension(parsed.h, DEFAULT_SETUP.arenaHeight),
+      classCounts
+    };
+  } catch {
+    return null;
+  }
+}
+
+function loadSetupFromUrl() {
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get("setup");
+  if (!token) {
+    return null;
+  }
+  return decodeSetupToken(token);
+}
+
+const INITIAL_SETUP = loadSetupFromUrl() ?? structuredClone(DEFAULT_SETUP);
 
 function sanitizeCount(value) {
   const parsed = Number.parseInt(value, 10);
@@ -270,6 +326,18 @@ function addStyles() {
       box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
       user-select: none;
     }
+    #ball-controls .status {
+      margin-bottom: 8px;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      background: linear-gradient(180deg, rgba(29, 40, 59, 0.9), rgba(17, 24, 39, 0.9));
+      padding: 8px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    #ball-controls .status strong {
+      color: #fef08a;
+    }
     #ball-controls h2 {
       margin: 0 0 10px;
       font-size: 15px;
@@ -301,6 +369,7 @@ function addStyles() {
       display: grid;
       margin-top: 8px;
       margin-bottom: 10px;
+      gap: 6px;
     }
     #ball-controls button {
       border: 0;
@@ -318,6 +387,61 @@ function addStyles() {
       font-size: 11px;
       color: #d1d5db;
       line-height: 1.3;
+    }
+    #ball-controls .subsection {
+      margin-top: 10px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #a5f3fc;
+    }
+    #ball-controls .drop-zone {
+      min-height: 48px;
+      border: 2px dashed #4b5563;
+      border-radius: 8px;
+      padding: 6px;
+      background: rgba(15, 23, 42, 0.7);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    #ball-controls .drop-zone.active {
+      border-color: #22d3ee;
+      background: rgba(12, 74, 110, 0.4);
+    }
+    #ball-controls .chip {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #111827;
+      border-radius: 12px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #e5e7eb;
+      cursor: grab;
+      white-space: nowrap;
+    }
+    #ball-controls .chip.saved {
+      cursor: pointer;
+      border-color: #e5e7eb;
+    }
+    #ball-controls .link-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    #ball-controls .link-row input {
+      background: #030712;
+      border-color: #4b5563;
+      font-size: 11px;
+    }
+    #ball-controls .mini {
+      background: #67e8f9;
+      color: #0f172a;
+      padding: 6px 8px;
+      font-size: 11px;
     }
     #ball-controls .desc-title {
       margin-top: 6px;
@@ -353,24 +477,23 @@ function buildControls(scene) {
     document.body.appendChild(root);
   }
 
-  const classRows = CLASS_KEYS.map((classKey) => {
-    const def = CLASS_DEFS[classKey];
-    return `
+  const classRows = CLASS_KEYS.map(
+    (classKey) => `
       <div class="row">
-        <label for="count_${classKey}">${def.label}</label>
+        <label for="count_${classKey}">${CLASS_DEFS[classKey].label}</label>
         <input id="count_${classKey}" data-class-key="${classKey}" type="number" min="0" max="90" />
       </div>
-    `;
-  }).join("");
+    `
+  ).join("");
 
-  const descRows = CLASS_KEYS.map((classKey) => {
-    const def = CLASS_DEFS[classKey];
-    const colorHex = `#${def.color.toString(16).padStart(6, "0")}`;
-    return `<p class="class-desc"><span class="swatch" style="background:${colorHex}"></span><strong>${def.label}:</strong> ${def.description}</p>`;
-  }).join("");
+  const descRows = CLASS_KEYS.map(
+    (classKey) =>
+      `<p class="class-desc"><span class="swatch" style="background:${classColorHex(classKey)}"></span><strong>${CLASS_DEFS[classKey].label}:</strong> ${CLASS_DEFS[classKey].description}</p>`
+  ).join("");
 
   root.innerHTML = `
     <h2>Pixel Arena Controls</h2>
+    <div id="roundStatus" class="status">Round running...</div>
     <div class="row">
       <label for="arenaWidth">Arena Width</label>
       <input id="arenaWidth" type="number" min="420" max="2200" />
@@ -382,42 +505,118 @@ function buildControls(scene) {
     ${classRows}
     <div class="actions">
       <button id="applySetupBtn" type="button">Apply Setup + Reset</button>
+      <button id="resetRoundBtn" type="button">Reset Round</button>
+    </div>
+    <div class="subsection">Round Survivors (drag)</div>
+    <div id="survivorPool" class="drop-zone"></div>
+    <div class="subsection">Next Round Box (drop here)</div>
+    <div id="nextRoundBox" class="drop-zone"></div>
+    <div class="actions">
+      <button id="useNextRoundBtn" type="button">Use Box For Next Round</button>
+    </div>
+    <div class="subsection">Share Setup Link</div>
+    <div class="link-row">
+      <input id="shareLinkOut" type="text" readonly />
+      <button id="copyLinkBtn" class="mini" type="button">Copy</button>
+    </div>
+    <div class="actions">
+      <button id="generateLinkBtn" type="button">Generate Link</button>
     </div>
     <div class="desc-title">Class Descriptions</div>
     ${descRows}
-    <div class="hint">R = reset | F = fast-forward</div>
-    <div class="hint">P = pause/resume</div>
+    <div class="hint">R = reset | F = fast-forward | P = pause</div>
+    <div class="hint">Tip: drag survivor chips into Next Round Box, then press Use Box For Next Round.</div>
   `;
 
   const arenaWidthEl = root.querySelector("#arenaWidth");
   const arenaHeightEl = root.querySelector("#arenaHeight");
+  const roundStatusEl = root.querySelector("#roundStatus");
+  const survivorPoolEl = root.querySelector("#survivorPool");
+  const nextRoundBoxEl = root.querySelector("#nextRoundBox");
+  const shareLinkOutEl = root.querySelector("#shareLinkOut");
   const applyBtn = root.querySelector("#applySetupBtn");
+  const resetRoundBtn = root.querySelector("#resetRoundBtn");
+  const useNextRoundBtn = root.querySelector("#useNextRoundBtn");
+  const generateLinkBtn = root.querySelector("#generateLinkBtn");
+  const copyLinkBtn = root.querySelector("#copyLinkBtn");
   const countInputs = root.querySelectorAll("[data-class-key]");
 
-  arenaWidthEl.value = String(scene.setup.arenaWidth);
-  arenaHeightEl.value = String(scene.setup.arenaHeight);
-  for (const input of countInputs) {
-    input.value = String(scene.setup.classCounts[input.dataset.classKey] ?? 0);
-  }
+  scene.ui = {
+    root,
+    arenaWidthEl,
+    arenaHeightEl,
+    roundStatusEl,
+    survivorPoolEl,
+    nextRoundBoxEl,
+    shareLinkOutEl,
+    countInputs
+  };
+
+  scene.syncControlInputs();
+
+  const activateDropZone = () => nextRoundBoxEl.classList.add("active");
+  const deactivateDropZone = () => nextRoundBoxEl.classList.remove("active");
+
+  nextRoundBoxEl.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    activateDropZone();
+  });
+  nextRoundBoxEl.addEventListener("dragleave", () => {
+    deactivateDropZone();
+  });
+  nextRoundBoxEl.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const classKey = event.dataTransfer?.getData("text/classKey");
+    if (!classKey || !CLASS_DEFS[classKey]) {
+      deactivateDropZone();
+      return;
+    }
+    scene.addClassToNextRoundBox(classKey);
+    deactivateDropZone();
+  });
 
   applyBtn.addEventListener("click", () => {
     const nextClassCounts = {};
     for (const input of countInputs) {
       nextClassCounts[input.dataset.classKey] = sanitizeCount(input.value);
     }
-
     scene.applySetup({
       arenaWidth: sanitizeDimension(arenaWidthEl.value, scene.setup.arenaWidth),
       arenaHeight: sanitizeDimension(arenaHeightEl.value, scene.setup.arenaHeight),
       classCounts: nextClassCounts
     });
+    scene.syncControlInputs();
+  });
 
-    arenaWidthEl.value = String(scene.setup.arenaWidth);
-    arenaHeightEl.value = String(scene.setup.arenaHeight);
-    for (const input of countInputs) {
-      input.value = String(scene.setup.classCounts[input.dataset.classKey] ?? 0);
+  resetRoundBtn.addEventListener("click", () => {
+    scene.resetSimulation();
+    scene.syncControlInputs();
+  });
+
+  useNextRoundBtn.addEventListener("click", () => {
+    scene.applyNextRoundBox();
+    scene.syncControlInputs();
+  });
+
+  generateLinkBtn.addEventListener("click", () => {
+    shareLinkOutEl.value = scene.generateShareLink();
+    shareLinkOutEl.select();
+  });
+
+  copyLinkBtn.addEventListener("click", async () => {
+    if (!shareLinkOutEl.value) {
+      shareLinkOutEl.value = scene.generateShareLink();
+    }
+    try {
+      await navigator.clipboard.writeText(shareLinkOutEl.value);
+      roundStatusEl.innerHTML = `${roundStatusEl.innerHTML}<br /><strong>Link copied.</strong>`;
+    } catch {
+      shareLinkOutEl.select();
+      document.execCommand("copy");
     }
   });
+
+  scene.updateRoundPanels();
 }
 
 class MainScene extends Phaser.Scene {
@@ -425,16 +624,23 @@ class MainScene extends Phaser.Scene {
     super("main");
     this.graphics = null;
     this.hudText = null;
+    this.winnerText = null;
     this.accumulator = 0;
     this.stepCounter = 0;
     this.fastForward = false;
     this.paused = false;
     this.initialState = [];
     this.balls = [];
-    this.setup = structuredClone(DEFAULT_SETUP);
+    this.setup = structuredClone(INITIAL_SETUP);
     this.effects = [];
     this.simTime = 0;
     this.lastDamageTimesByPair = new Map();
+    this.lastPairPruneAt = 0;
+    this.roundFinished = false;
+    this.winnerClassKey = null;
+    this.nextRoundBoxClasses = [];
+    this.ui = null;
+    this.pixelMaskCache = new Map();
   }
 
   create() {
@@ -446,6 +652,15 @@ class MainScene extends Phaser.Scene {
       color: "#f3f4f6"
     });
     this.hudText.setDepth(10);
+    this.winnerText = this.add.text(0, 0, "", {
+      fontFamily: "Consolas, monospace",
+      fontSize: "26px",
+      color: "#f8fafc",
+      fontStyle: "bold"
+    });
+    this.winnerText.setDepth(12);
+    this.winnerText.setOrigin(0.5, 0.5);
+    this.winnerText.setVisible(false);
 
     this.input.keyboard.on("keydown-R", () => {
       this.resetSimulation();
@@ -459,6 +674,169 @@ class MainScene extends Phaser.Scene {
 
     buildControls(this);
     this.rebuildInitialState();
+  }
+
+  syncControlInputs() {
+    if (!this.ui) {
+      return;
+    }
+    this.ui.arenaWidthEl.value = String(this.setup.arenaWidth);
+    this.ui.arenaHeightEl.value = String(this.setup.arenaHeight);
+    for (const input of this.ui.countInputs) {
+      input.value = String(this.setup.classCounts[input.dataset.classKey] ?? 0);
+    }
+  }
+
+  getCurrentClassCounts() {
+    const counts = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, 0]));
+    for (const ball of this.balls) {
+      counts[ball.classKey] += 1;
+    }
+    return counts;
+  }
+
+  evaluateWinnerState() {
+    if (this.roundFinished) {
+      return;
+    }
+    if (this.balls.length === 0) {
+      this.roundFinished = true;
+      this.winnerClassKey = null;
+      this.paused = true;
+      this.updateRoundPanels();
+      return;
+    }
+    const classSet = new Set(this.balls.map((ball) => ball.classKey));
+    if (classSet.size <= 1) {
+      this.roundFinished = true;
+      this.winnerClassKey = this.balls[0].classKey;
+      this.paused = true;
+      this.effects.push({
+        type: "ring",
+        x: this.balls[0].x,
+        y: this.balls[0].y,
+        color: this.balls[0].color,
+        life: 0.7,
+        radius: this.balls[0].r + 6
+      });
+      this.updateRoundPanels();
+    }
+  }
+
+  getSurvivorDraftPool() {
+    if (!this.roundFinished) {
+      return [];
+    }
+    return [...this.balls]
+      .sort((a, b) => b.hp - a.hp || a.id - b.id)
+      .map((ball) => ({
+        id: ball.id,
+        classKey: ball.classKey,
+        label: `${CLASS_DEFS[ball.classKey].label} #${ball.id} (${Math.round(ball.hp)})`
+      }));
+  }
+
+  addClassToNextRoundBox(classKey) {
+    if (!CLASS_DEFS[classKey] || this.nextRoundBoxClasses.length >= 90) {
+      return;
+    }
+    this.nextRoundBoxClasses.push(classKey);
+    this.updateRoundPanels();
+  }
+
+  applyNextRoundBox() {
+    if (this.nextRoundBoxClasses.length === 0) {
+      return;
+    }
+    const classCounts = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, 0]));
+    for (const classKey of this.nextRoundBoxClasses) {
+      classCounts[classKey] += 1;
+    }
+    this.nextRoundBoxClasses = [];
+    this.applySetup({
+      arenaWidth: this.setup.arenaWidth,
+      arenaHeight: this.setup.arenaHeight,
+      classCounts
+    });
+    this.updateRoundPanels();
+  }
+
+  generateShareLink() {
+    const token = encodeSetupToken(this.setup);
+    const url = new URL(window.location.href);
+    url.searchParams.set("setup", token);
+    const link = url.toString();
+    window.history.replaceState({}, "", link);
+    if (this.ui?.shareLinkOutEl) {
+      this.ui.shareLinkOutEl.value = link;
+    }
+    return link;
+  }
+
+  updateRoundPanels() {
+    if (!this.ui) {
+      return;
+    }
+
+    if (this.roundFinished) {
+      if (this.winnerClassKey) {
+        this.ui.roundStatusEl.innerHTML = `Winner: <strong style="color:${classColorHex(this.winnerClassKey)}">${CLASS_DEFS[this.winnerClassKey].label}</strong> (${this.balls.length} left)`;
+      } else {
+        this.ui.roundStatusEl.innerHTML = "<strong>Draw:</strong> everyone eliminated";
+      }
+    } else {
+      this.ui.roundStatusEl.textContent = `Round running... alive ${this.balls.length}`;
+    }
+
+    this.ui.survivorPoolEl.innerHTML = "";
+    const survivorPool = this.getSurvivorDraftPool();
+    if (survivorPool.length === 0) {
+      const msg = document.createElement("span");
+      msg.textContent = this.roundFinished ? "No survivors to draft." : "Survivors unlock when round ends.";
+      msg.style.fontSize = "11px";
+      msg.style.color = "#94a3b8";
+      this.ui.survivorPoolEl.appendChild(msg);
+    } else {
+      for (const survivor of survivorPool) {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = survivor.label;
+        chip.style.background = classColorHex(survivor.classKey);
+        chip.draggable = true;
+        chip.addEventListener("dragstart", (event) => {
+          event.dataTransfer?.setData("text/classKey", survivor.classKey);
+          event.dataTransfer.effectAllowed = "copy";
+        });
+        this.ui.survivorPoolEl.appendChild(chip);
+      }
+    }
+
+    this.ui.nextRoundBoxEl.innerHTML = "";
+    if (this.nextRoundBoxClasses.length === 0) {
+      const msg = document.createElement("span");
+      msg.textContent = "Drop survivor chips here.";
+      msg.style.fontSize = "11px";
+      msg.style.color = "#94a3b8";
+      this.ui.nextRoundBoxEl.appendChild(msg);
+    } else {
+      for (let i = 0; i < this.nextRoundBoxClasses.length; i += 1) {
+        const classKey = this.nextRoundBoxClasses[i];
+        const chip = document.createElement("span");
+        chip.className = "chip saved";
+        chip.textContent = `${CLASS_DEFS[classKey].label} ${i + 1}`;
+        chip.style.background = classColorHex(classKey);
+        chip.title = "Click to remove";
+        chip.addEventListener("click", () => {
+          this.nextRoundBoxClasses.splice(i, 1);
+          this.updateRoundPanels();
+        });
+        this.ui.nextRoundBoxEl.appendChild(chip);
+      }
+    }
+
+    if (!this.ui.shareLinkOutEl.value) {
+      this.ui.shareLinkOutEl.value = this.generateShareLink();
+    }
   }
 
   applySetup(newSetup) {
@@ -481,6 +859,7 @@ class MainScene extends Phaser.Scene {
     this.scale.resize(this.setup.arenaWidth, this.setup.arenaHeight);
     this.cameras.main.setSize(this.setup.arenaWidth, this.setup.arenaHeight);
     this.rebuildInitialState();
+    this.generateShareLink();
   }
 
   rebuildInitialState() {
@@ -500,7 +879,11 @@ class MainScene extends Phaser.Scene {
     this.paused = false;
     this.simTime = 0;
     this.lastDamageTimesByPair.clear();
+    this.lastPairPruneAt = 0;
+    this.roundFinished = false;
+    this.winnerClassKey = null;
     this.renderScene();
+    this.updateRoundPanels();
   }
 
   update(_time, delta) {
@@ -561,8 +944,13 @@ class MainScene extends Phaser.Scene {
       ball.vy = round6(ball.vy);
     }
 
+    this.pruneCollisionDamageCache();
+    this.evaluateWinnerState();
     this.updateEffects(dt);
     this.stepCounter += 1;
+    if (this.stepCounter % 15 === 0) {
+      this.updateRoundPanels();
+    }
   }
 
   applyPerStepAbilities(ball, dt) {
@@ -815,6 +1203,18 @@ class MainScene extends Phaser.Scene {
     return this.simTime - lastHitTime >= COLLISION_DAMAGE_COOLDOWN;
   }
 
+  pruneCollisionDamageCache() {
+    if (this.simTime - this.lastPairPruneAt < 0.6) {
+      return;
+    }
+    this.lastPairPruneAt = this.simTime;
+    for (const [pairKey, lastHitTime] of this.lastDamageTimesByPair.entries()) {
+      if (this.simTime - lastHitTime > COLLISION_DAMAGE_CACHE_TTL) {
+        this.lastDamageTimesByPair.delete(pairKey);
+      }
+    }
+  }
+
   spawnTrail(ball) {
     const speed = Math.hypot(ball.vx, ball.vy);
     if (speed < 200) {
@@ -837,19 +1237,51 @@ class MainScene extends Phaser.Scene {
       fx.life -= dt;
     }
     this.effects = this.effects.filter((fx) => fx.life > 0);
+    if (this.effects.length > MAX_EFFECTS) {
+      this.effects = this.effects.slice(this.effects.length - MAX_EFFECTS);
+    }
+  }
+
+  getPixelMask(radius) {
+    if (this.pixelMaskCache.has(radius)) {
+      return this.pixelMaskCache.get(radius);
+    }
+    const points = [];
+    for (let py = -radius; py <= radius; py += PIXEL_SIZE) {
+      for (let px = -radius; px <= radius; px += PIXEL_SIZE) {
+        if (px * px + py * py <= radius * radius) {
+          points.push([px, py]);
+        }
+      }
+    }
+    this.pixelMaskCache.set(radius, points);
+    return points;
   }
 
   drawPixelBall(ball) {
     const r = ball.r;
-    const step = PIXEL_SIZE;
-    for (let py = -r; py <= r; py += step) {
-      for (let px = -r; px <= r; px += step) {
-        if (px * px + py * py > r * r) {
-          continue;
-        }
-        this.graphics.fillStyle(ball.color, 1);
-        this.graphics.fillRect(ball.x + px, ball.y + py, step, step);
+    const shade = Phaser.Display.Color.IntegerToColor(ball.color);
+    const highlight = Phaser.Display.Color.GetColor(
+      clamp(shade.red + 48, 0, 255),
+      clamp(shade.green + 48, 0, 255),
+      clamp(shade.blue + 48, 0, 255)
+    );
+    const shadow = Phaser.Display.Color.GetColor(
+      clamp(shade.red - 42, 0, 255),
+      clamp(shade.green - 42, 0, 255),
+      clamp(shade.blue - 42, 0, 255)
+    );
+
+    const points = this.getPixelMask(r);
+    for (const [px, py] of points) {
+      let color = ball.color;
+      if (px + py < -r * 0.25) {
+        color = highlight;
+      } else if (px + py > r * 0.4) {
+        color = shadow;
       }
+      this.graphics.fillStyle(color, 1);
+      this.graphics.fillRect(ball.x + px, ball.y + py, PIXEL_SIZE, PIXEL_SIZE);
     }
 
     const edge = 0x111111;
@@ -938,6 +1370,9 @@ class MainScene extends Phaser.Scene {
       this.setup.arenaWidth - BORDER_THICKNESS,
       this.setup.arenaHeight - BORDER_THICKNESS
     );
+    this.graphics.fillStyle(0x0b1220, 0.2);
+    this.graphics.fillRect(0, 0, this.setup.arenaWidth, 40);
+    this.graphics.fillRect(0, this.setup.arenaHeight - 40, this.setup.arenaWidth, 40);
 
     for (const ball of this.balls) {
       this.drawPixelBall(ball);
@@ -956,36 +1391,63 @@ class MainScene extends Phaser.Scene {
 
       this.graphics.fillStyle(0x101316, 1);
       this.graphics.fillRect(barX, barY, barWidth, barHeight);
-      this.graphics.fillStyle(0x35c94a, 1);
+      const hpColor = Phaser.Display.Color.Interpolate.ColorWithColor(
+        Phaser.Display.Color.ValueToColor(0xdd3c3c),
+        Phaser.Display.Color.ValueToColor(0x35c94a),
+        100,
+        Math.floor(hpRatio * 100)
+      );
+      this.graphics.fillStyle(Phaser.Display.Color.GetColor(hpColor.r, hpColor.g, hpColor.b), 1);
       this.graphics.fillRect(barX + 1, barY + 1, (barWidth - 2) * hpRatio, barHeight - 2);
     }
 
     this.drawEffects();
 
+    if (this.roundFinished) {
+      const bannerWidth = Math.min(520, this.setup.arenaWidth - 60);
+      const bannerHeight = 54;
+      const bx = (this.setup.arenaWidth - bannerWidth) / 2;
+      const by = 20;
+      this.graphics.fillStyle(0x060b16, 0.82);
+      this.graphics.fillRect(bx, by, bannerWidth, bannerHeight);
+      this.graphics.lineStyle(2, this.winnerClassKey ? CLASS_DEFS[this.winnerClassKey].color : 0xf8fafc, 1);
+      this.graphics.strokeRect(bx, by, bannerWidth, bannerHeight);
+      this.graphics.fillStyle(0xf8fafc, 1);
+      this.graphics.fillRect(bx + 18, by + 20, bannerWidth - 36, 2);
+      const winnerLabel = this.winnerClassKey ? `${CLASS_DEFS[this.winnerClassKey].label} WINS` : "DRAW";
+      this.winnerText.setVisible(true);
+      this.winnerText.setText(winnerLabel);
+      this.winnerText.setColor(this.winnerClassKey ? classColorHex(this.winnerClassKey) : "#f8fafc");
+      this.winnerText.setPosition(this.setup.arenaWidth / 2, by + bannerHeight / 2);
+    } else {
+      this.winnerText.setVisible(false);
+    }
+
     const setupSummary = CLASS_KEYS.map(
       (classKey) => `${CLASS_DEFS[classKey].label}:${this.setup.classCounts[classKey]}`
     ).join(" ");
 
-    const aliveSummary = CLASS_KEYS.map((classKey) => {
-      const aliveCount = this.balls.reduce(
-        (count, ball) => (ball.classKey === classKey ? count + 1 : count),
-        0
-      );
-      return `${CLASS_DEFS[classKey].label}:${aliveCount}`;
-    }).join(" ");
+    const aliveCounts = this.getCurrentClassCounts();
+    const aliveSummary = CLASS_KEYS.map((classKey) => `${CLASS_DEFS[classKey].label}:${aliveCounts[classKey]}`).join(
+      " "
+    );
 
     this.hudText.setText(
       `step:${this.stepCounter}  alive:${this.balls.length}  size:${this.setup.arenaWidth}x${this.setup.arenaHeight}\nsetup:${setupSummary}\nalive:${aliveSummary}\nfast-forward:${
         this.fastForward ? "ON" : "OFF"
-      }  paused:${this.paused ? "ON" : "OFF"}`
+      }  paused:${this.paused ? "ON" : "OFF"}${
+        this.roundFinished
+          ? `\nwinner:${this.winnerClassKey ? CLASS_DEFS[this.winnerClassKey].label : "Draw"}`
+          : ""
+      }`
     );
   }
 }
 
 const config = {
   type: Phaser.AUTO,
-  width: DEFAULT_SETUP.arenaWidth,
-  height: DEFAULT_SETUP.arenaHeight,
+  width: INITIAL_SETUP.arenaWidth,
+  height: INITIAL_SETUP.arenaHeight,
   backgroundColor: "#1a1d26",
   pixelArt: true,
   antialias: false,
