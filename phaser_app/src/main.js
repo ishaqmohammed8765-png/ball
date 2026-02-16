@@ -37,6 +37,7 @@ import {
 import { buildCollisionPairs } from "./sim/spatial.js";
 import { calculateCollisionDamage } from "./sim/damage.js";
 import { buildControls } from "./ui/controls.js";
+import { getBattleComparison, pickComparisonClasses } from "./ui/battle-comparison.js";
 
 const INITIAL_SETUP = loadSetupFromUrl() ?? structuredClone(DEFAULT_SETUP);
 const INITIAL_REPLAY_TOKEN = loadReplayTokenFromUrl();
@@ -137,7 +138,7 @@ class MainScene extends Phaser.Scene {
     });
     this.input.keyboard.on("keydown-S", () => {
       this.applySetupFromUiInputs();
-      this.startRound();
+      this.startRound(true);
     });
     this.input.keyboard.on("keydown-F", () => {
       this.fastForward = !this.fastForward;
@@ -817,7 +818,7 @@ class MainScene extends Phaser.Scene {
       arenaHeight: this.tournament.baseSetup.arenaHeight,
       classCounts
     });
-    this.startRound();
+    this.startRound(true);
     this.updateRoundPanels();
   }
 
@@ -980,10 +981,28 @@ class MainScene extends Phaser.Scene {
     this.resetSimulation();
   }
 
-  startRound() {
+  showBattleComparison(onDone) {
+    const [left, right] = pickComparisonClasses(this);
+    const bc = getBattleComparison();
+    bc.show(left, right, () => {
+      if (onDone) onDone();
+    });
+  }
+
+  startRound(skipComparison) {
     if (this.roundActive) {
       return;
     }
+    if (!skipComparison) {
+      this.showBattleComparison(() => {
+        this._beginRound();
+      });
+      return;
+    }
+    this._beginRound();
+  }
+
+  _beginRound() {
     this.balls = this.initialState.map((ball) => ({
       ...ball,
       abilityState: { ...ball.abilityState }
@@ -1205,8 +1224,6 @@ class MainScene extends Phaser.Scene {
     }
 
     if (ball.classKey === "boss") {
-      ball.hp = Math.min(ball.maxHp, ball.hp + (def.regenPerSecond ?? 0) * dt);
-
       if (!ball.abilityState.bossEnraged && ball.hp <= ball.maxHp * (def.enrageThreshold ?? 0.45)) {
         ball.abilityState.bossEnraged = true;
         ball.outgoingBonus = (ball.outgoingBonus ?? 0) + (def.enrageOutgoingBonus ?? 0);
