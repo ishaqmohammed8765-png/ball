@@ -7,7 +7,7 @@ redirects = []
 [functions."*"]
 
 [build]
-publish = "C:\\Users\\Callum\\Desktop\\ball"
+publish = "dist"
 publishOrigin = "default"
 
 [build.environment]

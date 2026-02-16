@@ -439,6 +439,9 @@ export function buildControls(scene) {
       <button id="startRoundBtn" type="button">Start Round</button>
       <button id="resetRoundBtn" type="button">Prepare Round</button>
     </div>
+    <div class="actions">
+      <button id="battleComparisonBtn" type="button" style="background:#67e8f9;color:#0b1a2e">Battle Comparison</button>
+    </div>
     <div class="section">
       <div class="row">
         <label for="modeSelect">Mode</label>
@@ -587,6 +590,7 @@ export function buildControls(scene) {
   const presetBalancedBtn = root.querySelector("#presetBalanced");
   const presetChaosBtn = root.querySelector("#presetChaos");
   const presetDuelBtn = root.querySelector("#presetDuel");
+  const battleComparisonBtn = root.querySelector("#battleComparisonBtn");
   const countInputs = root.querySelectorAll("[data-class-key]");
 
   scene.ui = {
@@ -682,6 +686,10 @@ export function buildControls(scene) {
   resetRoundBtn.addEventListener("click", () => {
     scene.resetSimulation();
     scene.syncControlInputs();
+  });
+
+  battleComparisonBtn.addEventListener("click", () => {
+    scene.showBattleComparison();
   });
 
   startTournamentBtn.addEventListener("click", () => {
