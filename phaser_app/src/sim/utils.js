@@ -21,6 +21,45 @@ export function sanitizeDimension(value, fallback) {
   return clamp(parsed, 420, 2200);
 }
 
+export function capClassCounts(classCounts, maxTotal, classOrder = CLASS_KEYS) {
+  const capped = {};
+  let total = 0;
+  for (const classKey of classOrder) {
+    const count = sanitizeCount(classCounts?.[classKey]);
+    capped[classKey] = count;
+    total += count;
+  }
+
+  if (total <= maxTotal) {
+    return {
+      classCounts: capped,
+      total,
+      wasCapped: false
+    };
+  }
+
+  const trimmed = { ...capped };
+  const sortedKeys = [...classOrder].sort((a, b) => trimmed[b] - trimmed[a] || a.localeCompare(b));
+  let overBy = total - maxTotal;
+
+  // Remove from the largest pools first to preserve distribution.
+  for (const classKey of sortedKeys) {
+    if (overBy <= 0) {
+      break;
+    }
+    const reduction = Math.min(trimmed[classKey], overBy);
+    trimmed[classKey] -= reduction;
+    overBy -= reduction;
+  }
+
+  const nextTotal = Object.values(trimmed).reduce((sum, count) => sum + count, 0);
+  return {
+    classCounts: trimmed,
+    total: nextTotal,
+    wasCapped: true
+  };
+}
+
 function safeEncodeBase64(value) {
   return btoa(unescape(encodeURIComponent(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }

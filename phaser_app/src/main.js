@@ -7,6 +7,7 @@ import {
   COLLISION_DAMAGE_CACHE_TTL,
   COLLISION_DAMAGE_COOLDOWN,
   DEFAULT_SETUP,
+  EVOLUTION_DEFS,
   FAST_FORWARD_STEPS,
   FIXED_DT,
   MAX_EFFECTS,
@@ -16,10 +17,12 @@ import {
   NORMAL_STEPS,
   PIXEL_SIZE,
   RESTITUTION,
+  MUTATION_DEFS,
   UPGRADE_DEFS
 } from "./sim/constants.js";
 import { createBall, createInitialBalls } from "./sim/setup.js";
 import {
+  capClassCounts,
   classColorHex,
   clamp,
   decodeReplayToken,
@@ -56,6 +59,7 @@ class MainScene extends Phaser.Scene {
     this.lastDamageTimesByPair = new Map();
     this.lastPairPruneAt = 0;
     this.roundFinished = false;
+    this.roundActive = false;
     this.winnerClassKey = null;
     this.nextRoundBoxClasses = [];
     this.ui = null;
@@ -65,6 +69,7 @@ class MainScene extends Phaser.Scene {
     this.arenaMode = "standard";
     this.activeModifier = "none";
     this.prizeLedger = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, 0]));
+    this.roundWins = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, 0]));
     this.upgrades = Object.fromEntries(
       CLASS_KEYS.map((classKey) => [
         classKey,
@@ -75,6 +80,9 @@ class MainScene extends Phaser.Scene {
         }
       ])
     );
+    this.evolutionLevels = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, 0]));
+    this.mutations = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, null]));
+    this.lastRewardResult = null;
     this.battleHistory = [];
     this.combatLog = [];
     this.achievements = new Set();
@@ -82,6 +90,9 @@ class MainScene extends Phaser.Scene {
     this.textureCacheByKey = new Set();
     this.classGlyphCache = new Map();
     this.pendingReplayToken = INITIAL_REPLAY_TOKEN;
+    this.speedMultiplier = 1;
+    this.setupWarningMessage = "";
+    this.lastShareLink = "";
     this.tournament = {
       active: false,
       teamMode: false,
@@ -124,11 +135,22 @@ class MainScene extends Phaser.Scene {
     this.input.keyboard.on("keydown-R", () => {
       this.resetSimulation();
     });
+    this.input.keyboard.on("keydown-S", () => {
+      this.applySetupFromUiInputs();
+      this.startRound();
+    });
     this.input.keyboard.on("keydown-F", () => {
       this.fastForward = !this.fastForward;
     });
     this.input.keyboard.on("keydown-P", () => {
       this.paused = !this.paused;
+    });
+    this.input.keyboard.on("keydown", (event) => {
+      if (event.key === "]") {
+        this.setSpeedMultiplier(this.speedMultiplier === 4 ? 4 : this.speedMultiplier * 2);
+      } else if (event.key === "[") {
+        this.setSpeedMultiplier(this.speedMultiplier === 1 ? 1 : this.speedMultiplier / 2);
+      }
     });
 
     buildControls(this);
@@ -140,6 +162,21 @@ class MainScene extends Phaser.Scene {
     } else {
       this.rebuildInitialState();
     }
+  }
+
+  applySetupFromUiInputs() {
+    if (!this.ui?.countInputs || this.roundActive) {
+      return;
+    }
+    const classCounts = {};
+    for (const input of this.ui.countInputs) {
+      classCounts[input.dataset.classKey] = sanitizeCount(input.value);
+    }
+    this.applySetup({
+      arenaWidth: sanitizeDimension(this.ui.arenaWidthEl?.value, this.setup.arenaWidth),
+      arenaHeight: sanitizeDimension(this.ui.arenaHeightEl?.value, this.setup.arenaHeight),
+      classCounts
+    });
   }
 
   syncControlInputs() {
@@ -157,6 +194,9 @@ class MainScene extends Phaser.Scene {
     if (this.ui.modifierSelectEl) {
       this.ui.modifierSelectEl.value = this.activeModifier;
     }
+    if (this.ui.speedSelectEl) {
+      this.ui.speedSelectEl.value = String(this.speedMultiplier);
+    }
     for (const input of this.ui.countInputs) {
       input.value = String(this.setup.classCounts[input.dataset.classKey] ?? 0);
     }
@@ -173,6 +213,16 @@ class MainScene extends Phaser.Scene {
     this.updateRoundPanels();
   }
 
+  getModeLabel(modeKey = this.mode) {
+    if (modeKey === "blitz") {
+      return "Stress Test";
+    }
+    if (modeKey === "tournament") {
+      return "Bracket Test";
+    }
+    return "Sandbox";
+  }
+
   setArenaMode(nextArenaMode) {
     if (!ARENA_MODE_KEYS.includes(nextArenaMode)) {
       return;
@@ -186,6 +236,15 @@ class MainScene extends Phaser.Scene {
       return;
     }
     this.activeModifier = nextModifier;
+    this.updateRoundPanels();
+  }
+
+  setSpeedMultiplier(nextSpeedMultiplier) {
+    const parsed = Number(nextSpeedMultiplier);
+    if (![1, 2, 4].includes(parsed)) {
+      return;
+    }
+    this.speedMultiplier = parsed;
     this.updateRoundPanels();
   }
 
@@ -255,6 +314,7 @@ class MainScene extends Phaser.Scene {
 
   awardWinnerPrize(classKey, amount) {
     this.prizeLedger[classKey] += amount;
+    this.roundWins[classKey] += 1;
     this.battleHistory.unshift({
       id: this.stepCounter + this.simTime,
       mode: this.mode,
@@ -269,33 +329,86 @@ class MainScene extends Phaser.Scene {
     this.evaluateAchievements();
   }
 
-  getUpgradeCost(classKey, upgradeKey) {
-    const upgrade = UPGRADE_DEFS[upgradeKey];
-    if (!upgrade) {
-      return Number.POSITIVE_INFINITY;
-    }
-    const level = this.upgrades[classKey]?.[upgradeKey] ?? 0;
-    return Math.round(upgrade.baseCost * Math.pow(upgrade.costScale, level));
+  getDeterministicValue(classKey, salt = 0) {
+    const classSum = classKey.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    const base =
+      classSum +
+      Math.floor(this.simTime * 1000) +
+      this.stepCounter * 17 +
+      this.balls.length * 13 +
+      this.battleHistory.length * 29 +
+      salt * 41;
+    return Math.abs(base);
   }
 
-  buyUpgrade(classKey, upgradeKey) {
-    const upgradeDef = UPGRADE_DEFS[upgradeKey];
-    if (!upgradeDef || !this.upgrades[classKey]) {
-      return false;
+  pickDeterministicRoundReward(classKey) {
+    const rewardKinds = ["stat", "mutation", "evolution"];
+    const statKeys = ["hp", "speed", "mastery"];
+    const progression = this.upgrades[classKey];
+    const availableStats = statKeys.filter((key) => progression[key] < UPGRADE_DEFS[key].maxLevel);
+    const hasMutation = Boolean(this.mutations[classKey]);
+    const canMutate = !hasMutation;
+    const canEvolve = (this.evolutionLevels[classKey] ?? 0) < EVOLUTION_DEFS.maxLevel;
+    const availableKinds = rewardKinds.filter((kind) => {
+      if (kind === "stat") {
+        return availableStats.length > 0;
+      }
+      if (kind === "mutation") {
+        return canMutate;
+      }
+      return canEvolve;
+    });
+    if (availableKinds.length === 0) {
+      return null;
     }
-    const currentLevel = this.upgrades[classKey][upgradeKey];
-    if (currentLevel >= upgradeDef.maxLevel) {
-      return false;
+
+    let kind = rewardKinds[this.getDeterministicValue(classKey, 0) % rewardKinds.length];
+    if (!availableKinds.includes(kind)) {
+      kind = availableKinds[this.getDeterministicValue(classKey, 1) % availableKinds.length];
     }
-    const cost = this.getUpgradeCost(classKey, upgradeKey);
-    if ((this.prizeLedger[classKey] ?? 0) < cost) {
-      return false;
+
+    if (kind === "stat") {
+      const statKey = availableStats[this.getDeterministicValue(classKey, 2) % availableStats.length];
+      return { type: "stat", statKey };
     }
-    this.prizeLedger[classKey] -= cost;
-    this.upgrades[classKey][upgradeKey] += 1;
-    this.logCombatEvent(`${CLASS_DEFS[classKey].label} bought ${upgradeDef.label} Lv${this.upgrades[classKey][upgradeKey]}`);
-    this.updateRoundPanels();
-    return true;
+    if (kind === "mutation") {
+      const mutationKeys = Object.keys(MUTATION_DEFS);
+      const mutationKey = mutationKeys[this.getDeterministicValue(classKey, 3) % mutationKeys.length];
+      return { type: "mutation", mutationKey };
+    }
+    return { type: "evolution" };
+  }
+
+  applyRoundReward(classKey) {
+    const reward = this.pickDeterministicRoundReward(classKey);
+    if (!reward) {
+      this.lastRewardResult = { classKey, label: `${CLASS_DEFS[classKey].label}: no reward available` };
+      return;
+    }
+
+    if (reward.type === "stat") {
+      this.upgrades[classKey][reward.statKey] += 1;
+      this.lastRewardResult = {
+        classKey,
+        type: "stat",
+        label: `${CLASS_DEFS[classKey].label} auto-reward: +${UPGRADE_DEFS[reward.statKey].label} (Lv${this.upgrades[classKey][reward.statKey]})`
+      };
+    } else if (reward.type === "mutation") {
+      this.mutations[classKey] = reward.mutationKey;
+      this.lastRewardResult = {
+        classKey,
+        type: "mutation",
+        label: `${CLASS_DEFS[classKey].label} auto-reward: mutation ${MUTATION_DEFS[reward.mutationKey].label}`
+      };
+    } else {
+      this.evolutionLevels[classKey] += 1;
+      this.lastRewardResult = {
+        classKey,
+        type: "evolution",
+        label: `${CLASS_DEFS[classKey].label} auto-reward: evolution Lv${this.evolutionLevels[classKey]}`
+      };
+    }
+    this.logCombatEvent(this.lastRewardResult.label);
   }
 
   applyUpgradesToBall(ball) {
@@ -320,6 +433,42 @@ class MainScene extends Phaser.Scene {
       ball.outgoingBonus = masteryLevel * UPGRADE_DEFS.mastery.outgoingPerLevel;
       ball.incomingReduction = masteryLevel * UPGRADE_DEFS.mastery.incomingReductionPerLevel;
     }
+
+    const evolutionLevel = this.evolutionLevels[ball.classKey] ?? 0;
+    if (evolutionLevel > 0) {
+      ball.maxHp *= 1 + evolutionLevel * EVOLUTION_DEFS.hpPerLevel;
+      ball.hp = ball.maxHp;
+      const evoSpeedMult = 1 + evolutionLevel * EVOLUTION_DEFS.speedPerLevel;
+      ball.vx *= evoSpeedMult;
+      ball.vy *= evoSpeedMult;
+      ball.r = Math.round(ball.r + evolutionLevel * EVOLUTION_DEFS.radiusPerLevel);
+      ball.outgoingBonus = (ball.outgoingBonus ?? 0) + evolutionLevel * EVOLUTION_DEFS.outgoingPerLevel;
+      ball.incomingReduction = clamp(
+        (ball.incomingReduction ?? 0) + evolutionLevel * EVOLUTION_DEFS.incomingReductionPerLevel,
+        0,
+        0.75
+      );
+    }
+
+    const mutationKey = this.mutations[ball.classKey];
+    if (mutationKey && MUTATION_DEFS[mutationKey]) {
+      const mutation = MUTATION_DEFS[mutationKey];
+      ball.mutationKey = mutationKey;
+      ball.maxHp *= mutation.hpPenalty ?? 0.92;
+      ball.hp = Math.min(ball.hp, ball.maxHp);
+      ball.outgoingBonus = (ball.outgoingBonus ?? 0) - (1 - (mutation.outgoingPenalty ?? 0.9));
+      if (mutation.ability === "dash") {
+        ball.abilityState.mutationCooldown = mutation.cooldown ?? 3.8;
+      }
+      if (mutation.ability === "sword") {
+        ball.abilityState.swordsmanSlashCooldown = mutation.slashCooldown ?? 1.75;
+      }
+      if (mutation.ability === "archer") {
+        ball.abilityState.archerShotCooldown = mutation.shotCooldown ?? 1.35;
+      }
+    } else {
+      ball.mutationKey = null;
+    }
   }
 
   exportReplayToken() {
@@ -329,7 +478,10 @@ class MainScene extends Phaser.Scene {
       arenaMode: this.arenaMode,
       activeModifier: this.activeModifier,
       setup: this.setup,
-      upgrades: this.upgrades
+      upgrades: this.upgrades,
+      evolutionLevels: this.evolutionLevels,
+      mutations: this.mutations,
+      roundWins: this.roundWins
     };
     return encodeReplayToken(payload);
   }
@@ -353,6 +505,23 @@ class MainScene extends Phaser.Scene {
           speed: clamp(Number(source.speed) || 0, 0, UPGRADE_DEFS.speed.maxLevel),
           mastery: clamp(Number(source.mastery) || 0, 0, UPGRADE_DEFS.mastery.maxLevel)
         };
+      }
+    }
+    if (payload.evolutionLevels && typeof payload.evolutionLevels === "object") {
+      for (const classKey of CLASS_KEYS) {
+        const nextLevel = Number(payload.evolutionLevels[classKey]) || 0;
+        this.evolutionLevels[classKey] = clamp(nextLevel, 0, EVOLUTION_DEFS.maxLevel);
+      }
+    }
+    if (payload.mutations && typeof payload.mutations === "object") {
+      for (const classKey of CLASS_KEYS) {
+        const mutationKey = payload.mutations[classKey];
+        this.mutations[classKey] = MUTATION_DEFS[mutationKey] ? mutationKey : null;
+      }
+    }
+    if (payload.roundWins && typeof payload.roundWins === "object") {
+      for (const classKey of CLASS_KEYS) {
+        this.roundWins[classKey] = Number(payload.roundWins[classKey]) || 0;
       }
     }
     this.applySetup(payload.setup);
@@ -402,12 +571,13 @@ class MainScene extends Phaser.Scene {
   }
 
   evaluateWinnerState() {
-    if (this.roundFinished) {
+    if (this.roundFinished || !this.roundActive) {
       return;
     }
 
     if (this.balls.length === 0) {
       this.roundFinished = true;
+      this.roundActive = false;
       this.winnerClassKey = this.resolveEmptyBattleWinner();
       this.paused = true;
       this.finalizeBattleResults();
@@ -418,6 +588,7 @@ class MainScene extends Phaser.Scene {
     const classSet = new Set(this.balls.map((ball) => ball.classKey));
     if (classSet.size <= 1) {
       this.roundFinished = true;
+      this.roundActive = false;
       this.winnerClassKey = this.balls[0].classKey;
       this.paused = true;
       this.effects.push({
@@ -439,6 +610,7 @@ class MainScene extends Phaser.Scene {
     }
     const prize = this.getBattlePrizeAmount();
     this.awardWinnerPrize(this.winnerClassKey, prize);
+    this.applyRoundReward(this.winnerClassKey);
     if (this.tournament.active) {
       this.completeTournamentBattle(this.winnerClassKey);
     }
@@ -460,13 +632,13 @@ class MainScene extends Phaser.Scene {
 
   getPrizeBoardHtml() {
     const ranked = [...CLASS_KEYS]
-      .map((classKey) => ({ classKey, prize: this.prizeLedger[classKey] }))
-      .sort((a, b) => b.prize - a.prize || CLASS_KEYS.indexOf(a.classKey) - CLASS_KEYS.indexOf(b.classKey));
+      .map((classKey) => ({ classKey, prize: this.prizeLedger[classKey], wins: this.roundWins[classKey] }))
+      .sort((a, b) => b.wins - a.wins || b.prize - a.prize || CLASS_KEYS.indexOf(a.classKey) - CLASS_KEYS.indexOf(b.classKey));
     const rows = ranked
       .slice(0, 6)
       .map(
         (entry) =>
-          `<div><strong style="color:${classColorHex(entry.classKey)}">${CLASS_DEFS[entry.classKey].label}</strong>: ${entry.prize}</div>`
+          `<div><strong style="color:${classColorHex(entry.classKey)}">${CLASS_DEFS[entry.classKey].label}</strong>: ${entry.wins} wins, ${entry.prize} score</div>`
       )
       .join("");
     return rows || "<div>No prizes awarded yet.</div>";
@@ -507,17 +679,20 @@ class MainScene extends Phaser.Scene {
       .join("");
   }
 
-  getUpgradePanelHtml(classKey) {
-    const key = CLASS_DEFS[classKey] ? classKey : CLASS_KEYS[0];
-    const levels = this.upgrades[key];
-    const hpCost = this.getUpgradeCost(key, "hp");
-    const speedCost = this.getUpgradeCost(key, "speed");
-    const masteryCost = this.getUpgradeCost(key, "mastery");
+  getRewardSummaryHtml() {
+    if (!this.lastRewardResult) {
+      return "<div>Win a round to trigger deterministic auto-rewards.</div>";
+    }
+    const classKey = this.lastRewardResult.classKey;
+    const levels = this.upgrades[classKey];
+    const evo = this.evolutionLevels[classKey] ?? 0;
+    const mutationKey = this.mutations[classKey];
+    const mutationLabel = mutationKey ? MUTATION_DEFS[mutationKey].label : "None";
     return `
-      <div><strong style="color:${classColorHex(key)}">${CLASS_DEFS[key].label}</strong> prize: ${this.prizeLedger[key]}</div>
-      <div>HP Lv${levels.hp} | next ${hpCost}</div>
-      <div>Speed Lv${levels.speed} | next ${speedCost}</div>
-      <div>Mastery Lv${levels.mastery} | next ${masteryCost}</div>
+      <div><strong style="color:${classColorHex(classKey)}">${CLASS_DEFS[classKey].label}</strong></div>
+      <div>${this.lastRewardResult.label}</div>
+      <div>Stats: HP Lv${levels.hp} | Speed Lv${levels.speed} | Mastery Lv${levels.mastery}</div>
+      <div>Evolution Lv${evo} | Mutation: ${mutationLabel}</div>
     `;
   }
 
@@ -642,7 +817,7 @@ class MainScene extends Phaser.Scene {
       arenaHeight: this.tournament.baseSetup.arenaHeight,
       classCounts
     });
-    this.paused = false;
+    this.startRound();
     this.updateRoundPanels();
   }
 
@@ -691,7 +866,10 @@ class MainScene extends Phaser.Scene {
     url.searchParams.set("setup", setupToken);
     url.searchParams.set("replay", replayToken);
     const link = url.toString();
-    window.history.replaceState({}, "", link);
+    if (link !== this.lastShareLink) {
+      window.history.replaceState({}, "", link);
+      this.lastShareLink = link;
+    }
     if (this.ui?.shareLinkOutEl) {
       this.ui.shareLinkOutEl.value = link;
     }
@@ -703,7 +881,9 @@ class MainScene extends Phaser.Scene {
       return;
     }
 
-    this.ui.roundStatusEl.innerHTML = this.ui.createStatusHtml();
+    this.ui.roundStatusEl.innerHTML = `${this.ui.createStatusHtml()}${
+      this.setupWarningMessage ? `<br /><strong style="color:#fda4af">${this.setupWarningMessage}</strong>` : ""
+    }`;
     if (this.ui.prizeBoardEl) {
       this.ui.prizeBoardEl.innerHTML = this.getPrizeBoardHtml();
     }
@@ -719,8 +899,12 @@ class MainScene extends Phaser.Scene {
     if (this.ui.replayOutEl) {
       this.ui.replayOutEl.value = this.exportReplayToken();
     }
-    if (this.ui.upgradeClassEl && this.ui.upgradeSummaryEl) {
-      this.ui.upgradeSummaryEl.innerHTML = this.getUpgradePanelHtml(this.ui.upgradeClassEl.value);
+    if (this.ui.rewardSummaryEl) {
+      this.ui.rewardSummaryEl.innerHTML = this.getRewardSummaryHtml();
+    }
+    if (this.ui.rewardChoicesEl) {
+      this.ui.rewardChoicesEl.innerHTML =
+        '<div class="panel">Reward is auto-picked per winning round (deterministic).</div>';
     }
 
     this.ui.survivorPoolEl.innerHTML = "";
@@ -774,15 +958,15 @@ class MainScene extends Phaser.Scene {
   }
 
   applySetup(newSetup) {
-    const safeClassCounts = {};
-    for (const classKey of CLASS_KEYS) {
-      safeClassCounts[classKey] = sanitizeCount(newSetup.classCounts[classKey]);
-    }
+    const classCountResult = capClassCounts(newSetup.classCounts, MAX_TOTAL_BALLS, CLASS_KEYS);
+    this.setupWarningMessage = classCountResult.wasCapped
+      ? `Setup capped to ${MAX_TOTAL_BALLS} total balls for stable performance.`
+      : "";
 
     this.setup = {
       arenaWidth: sanitizeDimension(newSetup.arenaWidth, DEFAULT_SETUP.arenaWidth),
       arenaHeight: sanitizeDimension(newSetup.arenaHeight, DEFAULT_SETUP.arenaHeight),
-      classCounts: safeClassCounts
+      classCounts: classCountResult.classCounts
     };
 
     this.scale.resize(this.setup.arenaWidth, this.setup.arenaHeight);
@@ -796,7 +980,10 @@ class MainScene extends Phaser.Scene {
     this.resetSimulation();
   }
 
-  resetSimulation() {
+  startRound() {
+    if (this.roundActive) {
+      return;
+    }
     this.balls = this.initialState.map((ball) => ({
       ...ball,
       abilityState: { ...ball.abilityState }
@@ -814,12 +1001,37 @@ class MainScene extends Phaser.Scene {
     this.lastPairPruneAt = 0;
     this.roundFinished = false;
     this.winnerClassKey = null;
+    this.roundActive = this.balls.length > 0;
+    this.lastNonEmptyClassSnapshot = this.getCurrentClassCounts();
     this.nextBallId = this.balls.reduce((maxId, ball) => Math.max(maxId, ball.id), -1) + 1;
     this.renderScene();
     this.updateRoundPanels();
   }
 
+  resetSimulation() {
+    this.balls = [];
+    this.effects = [];
+    this.stepCounter = 0;
+    this.accumulator = 0;
+    this.fastForward = false;
+    this.paused = false;
+    this.simTime = 0;
+    this.lastDamageTimesByPair.clear();
+    this.lastPairPruneAt = 0;
+    this.roundFinished = false;
+    this.roundActive = false;
+    this.winnerClassKey = null;
+    this.lastNonEmptyClassSnapshot = Object.fromEntries(CLASS_KEYS.map((classKey) => [classKey, 0]));
+    this.nextBallId = this.initialState.reduce((maxId, ball) => Math.max(maxId, ball.id), -1) + 1;
+    this.renderScene();
+    this.updateRoundPanels();
+  }
+
   update(_time, delta) {
+    if (!this.roundActive) {
+      this.renderScene();
+      return;
+    }
     if (this.paused) {
       this.renderScene();
       return;
@@ -828,7 +1040,8 @@ class MainScene extends Phaser.Scene {
     this.accumulator += delta / 1000;
     this.accumulator = Math.min(this.accumulator, 0.25);
 
-    const maxStepsThisFrame = this.fastForward ? FAST_FORWARD_STEPS : NORMAL_STEPS;
+    const baseSteps = this.fastForward ? FAST_FORWARD_STEPS : NORMAL_STEPS;
+    const maxStepsThisFrame = baseSteps * this.speedMultiplier;
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < maxStepsThisFrame) {
       this.simulateStep(FIXED_DT);
@@ -851,7 +1064,7 @@ class MainScene extends Phaser.Scene {
     }
 
     for (const ball of aliveBalls) {
-      this.applyPerStepAbilities(ball, dt);
+      this.applyPerStepAbilities(ball, dt, aliveBalls, pendingDamage);
       ball.x += ball.vx * dt * modeRules.movementMult;
       ball.y += ball.vy * dt * modeRules.movementMult;
       const wallBounceNormal = this.resolveWallCollision(ball);
@@ -901,7 +1114,7 @@ class MainScene extends Phaser.Scene {
     }
   }
 
-  applyPerStepAbilities(ball, dt) {
+  applyPerStepAbilities(ball, dt, aliveBalls, pendingDamage) {
     const def = CLASS_DEFS[ball.classKey];
     if (ball.abilityState.splitCooldownLeft > 0) {
       ball.abilityState.splitCooldownLeft = Math.max(0, ball.abilityState.splitCooldownLeft - dt);
@@ -909,9 +1122,27 @@ class MainScene extends Phaser.Scene {
     if (ball.abilityState.bossShockwaveCooldown > 0) {
       ball.abilityState.bossShockwaveCooldown = Math.max(0, ball.abilityState.bossShockwaveCooldown - dt);
     }
+    if (ball.abilityState.bossRoarCooldown > 0) {
+      ball.abilityState.bossRoarCooldown = Math.max(0, ball.abilityState.bossRoarCooldown - dt);
+    }
+    if (ball.abilityState.bossChargeCooldown > 0) {
+      ball.abilityState.bossChargeCooldown = Math.max(0, ball.abilityState.bossChargeCooldown - dt);
+    }
+    if (ball.abilityState.swordsmanSlashCooldown > 0) {
+      ball.abilityState.swordsmanSlashCooldown = Math.max(0, ball.abilityState.swordsmanSlashCooldown - dt);
+    }
+    if (ball.abilityState.archerShotCooldown > 0) {
+      ball.abilityState.archerShotCooldown = Math.max(0, ball.abilityState.archerShotCooldown - dt);
+    }
+    if (ball.abilityState.mutationCooldown > 0) {
+      ball.abilityState.mutationCooldown = Math.max(0, ball.abilityState.mutationCooldown - dt);
+    }
 
-    if (def.regenPerSecond) {
-      ball.hp = Math.min(ball.maxHp, ball.hp + def.regenPerSecond * dt);
+    const mutationDef = ball.mutationKey ? MUTATION_DEFS[ball.mutationKey] : null;
+    const regenPerSecond = (def.regenPerSecond ?? 0) + (mutationDef?.ability === "regen" ? mutationDef.regenPerSecond ?? 0 : 0);
+
+    if (regenPerSecond > 0) {
+      ball.hp = Math.min(ball.maxHp, ball.hp + regenPerSecond * dt);
       if ((this.stepCounter + ball.id) % 28 === 0) {
         this.effects.push({
           type: "plus",
@@ -939,6 +1170,19 @@ class MainScene extends Phaser.Scene {
         });
       }
     }
+    if (mutationDef?.ability === "dash" && ball.classKey !== "trickster" && ball.abilityState.mutationCooldown <= 0) {
+      ball.vx *= mutationDef.dashMultiplier ?? 1.22;
+      ball.vy *= mutationDef.dashMultiplier ?? 1.22;
+      ball.abilityState.mutationCooldown = mutationDef.cooldown ?? 3.8;
+      this.effects.push({
+        type: "ring",
+        x: ball.x,
+        y: ball.y,
+        color: 0xfacc15,
+        life: 0.28,
+        radius: ball.r + 2
+      });
+    }
 
     if (ball.classKey === "bulwark") {
       if (ball.abilityState.bulwarkShieldTimeLeft > 0) {
@@ -957,6 +1201,190 @@ class MainScene extends Phaser.Scene {
             radius: ball.r + 2
           });
         }
+      }
+    }
+
+    if (ball.classKey === "boss") {
+      ball.hp = Math.min(ball.maxHp, ball.hp + (def.regenPerSecond ?? 0) * dt);
+
+      if (!ball.abilityState.bossEnraged && ball.hp <= ball.maxHp * (def.enrageThreshold ?? 0.45)) {
+        ball.abilityState.bossEnraged = true;
+        ball.outgoingBonus = (ball.outgoingBonus ?? 0) + (def.enrageOutgoingBonus ?? 0);
+        ball.incomingReduction = clamp((ball.incomingReduction ?? 0) + (def.enrageIncomingReduction ?? 0), 0, 0.75);
+        ball.vx *= def.enrageSpeedMult ?? 1;
+        ball.vy *= def.enrageSpeedMult ?? 1;
+        this.effects.push({
+          type: "ring",
+          x: ball.x,
+          y: ball.y,
+          color: 0xff6b35,
+          life: 0.56,
+          radius: ball.r + 8
+        });
+        this.logCombatEvent(`Boss #${ball.id} enraged`);
+      }
+
+      if (ball.abilityState.bossChargeCooldown <= 0) {
+        const angle = (((this.stepCounter * 13 + ball.id * 17) % 360) * Math.PI) / 180;
+        const force = def.chargeForce ?? 100;
+        ball.vx += Math.cos(angle) * force;
+        ball.vy += Math.sin(angle) * force;
+        ball.abilityState.bossChargeCooldown = def.chargeCooldown ?? 1.7;
+        this.effects.push({
+          type: "spark",
+          x: ball.x,
+          y: ball.y,
+          color: 0xffedd5,
+          life: 0.28
+        });
+      }
+
+      if (ball.abilityState.bossRoarCooldown <= 0) {
+        this.triggerBossRoar(ball, aliveBalls, pendingDamage);
+      }
+    }
+
+    if (ball.classKey === "swordsman" || mutationDef?.ability === "sword") {
+      const swordDef = ball.classKey === "swordsman" ? def : mutationDef;
+      if (ball.abilityState.swordsmanSlashCooldown <= 0) {
+        this.triggerSwordSlash(ball, aliveBalls, pendingDamage, swordDef, ball.classKey === "swordsman" ? 0xfb923c : 0xfbbf24);
+        ball.abilityState.swordsmanSlashCooldown = swordDef.slashCooldown ?? 1.25;
+      }
+    }
+
+    if (ball.classKey === "archer" || mutationDef?.ability === "archer") {
+      const archerDef = ball.classKey === "archer" ? def : mutationDef;
+      if (ball.abilityState.archerShotCooldown <= 0) {
+        this.triggerArcherShot(ball, aliveBalls, pendingDamage, archerDef, ball.classKey === "archer" ? 0x86efac : 0xfde68a);
+        ball.abilityState.archerShotCooldown = archerDef.shotCooldown ?? 1;
+      }
+    }
+  }
+
+  triggerSwordSlash(source, aliveBalls, pendingDamage, slashDef, color) {
+    const radius = slashDef.slashRadius ?? 90;
+    const radiusSq = radius * radius;
+    const slashDamage = slashDef.slashDamage ?? 8;
+    const slashPush = slashDef.slashPush ?? 64;
+    let hits = 0;
+
+    for (const target of aliveBalls) {
+      if (target.id === source.id || !target.alive) {
+        continue;
+      }
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > radiusSq) {
+        continue;
+      }
+      const dist = Math.sqrt(distSq) || 1;
+      const nx = dx / dist;
+      const ny = dy / dist;
+      target.vx += nx * slashPush;
+      target.vy += ny * slashPush;
+      pendingDamage.set(target.id, (pendingDamage.get(target.id) ?? 0) + slashDamage);
+      hits += 1;
+    }
+
+    this.effects.push({
+      type: "slash",
+      x: source.x,
+      y: source.y,
+      color,
+      life: 0.25,
+      radius
+    });
+    if (hits > 0 && this.stepCounter % 18 === 0) {
+      this.logCombatEvent(`${CLASS_DEFS[source.classKey].label} #${source.id} slash hit ${hits}`);
+    }
+  }
+
+  triggerArcherShot(source, aliveBalls, pendingDamage, shotDef, color) {
+    let target = null;
+    let bestDistSq = Number.POSITIVE_INFINITY;
+    const range = shotDef.shotRange ?? 280;
+    const rangeSq = range * range;
+
+    for (const candidate of aliveBalls) {
+      if (!candidate.alive || candidate.id === source.id) {
+        continue;
+      }
+      const dx = candidate.x - source.x;
+      const dy = candidate.y - source.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > rangeSq) {
+        continue;
+      }
+      if (distSq < bestDistSq) {
+        target = candidate;
+        bestDistSq = distSq;
+      }
+    }
+    if (!target) {
+      return;
+    }
+
+    const dist = Math.sqrt(bestDistSq) || 1;
+    const nx = (target.x - source.x) / dist;
+    const ny = (target.y - source.y) / dist;
+    target.vx += nx * (shotDef.shotPush ?? 55);
+    target.vy += ny * (shotDef.shotPush ?? 55);
+    pendingDamage.set(target.id, (pendingDamage.get(target.id) ?? 0) + (shotDef.shotDamage ?? 9));
+
+    this.effects.push({
+      type: "arrow",
+      x: source.x,
+      y: source.y,
+      tx: target.x,
+      ty: target.y,
+      color,
+      life: 0.2
+    });
+    if (this.stepCounter % 20 === 0) {
+      this.logCombatEvent(`${CLASS_DEFS[source.classKey].label} #${source.id} shot #${target.id}`);
+    }
+  }
+
+  triggerBossRoar(source, aliveBalls, pendingDamage) {
+    const def = CLASS_DEFS.boss;
+    source.abilityState.bossRoarCooldown = def.roarCooldown ?? 1.1;
+    const radius = def.roarRadius ?? 170;
+    const radiusSq = radius * radius;
+    const damage = (def.roarDamage ?? 8) * (source.abilityState.bossEnraged ? 1.35 : 1);
+    const push = def.roarPush ?? 110;
+
+    let hits = 0;
+    for (const target of aliveBalls) {
+      if (target.id === source.id || !target.alive) {
+        continue;
+      }
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > radiusSq) {
+        continue;
+      }
+      const dist = Math.sqrt(distSq) || 1;
+      const nx = dx / dist;
+      const ny = dy / dist;
+      target.vx += nx * push;
+      target.vy += ny * push;
+      pendingDamage.set(target.id, (pendingDamage.get(target.id) ?? 0) + damage);
+      hits += 1;
+    }
+
+    if (hits > 0) {
+      this.effects.push({
+        type: "ring",
+        x: source.x,
+        y: source.y,
+        color: source.abilityState.bossEnraged ? 0xff7a59 : 0xffc36b,
+        life: 0.34,
+        radius
+      });
+      if (this.stepCounter % 20 === 0) {
+        this.logCombatEvent(`Boss roar hit ${hits}`);
       }
     }
   }
@@ -1132,17 +1560,19 @@ class MainScene extends Phaser.Scene {
     if (source.abilityState.bossShockwaveCooldown > 0) {
       return;
     }
-    const interval = CLASS_DEFS.boss.shockwaveIntervalSteps ?? 8;
+    const def = CLASS_DEFS.boss;
+    const interval = def.shockwaveIntervalSteps ?? 8;
     if ((this.stepCounter + source.id + target.id) % interval !== 0) {
       return;
     }
 
-    const push = 75;
+    const push = def.shockwavePush ?? 75;
+    const recoil = def.shockwaveRecoil ?? 0.2;
     target.vx += normalX * push;
     target.vy += normalY * push;
-    source.vx -= normalX * push * 0.2;
-    source.vy -= normalY * push * 0.2;
-    source.abilityState.bossShockwaveCooldown = 0.5;
+    source.vx -= normalX * push * recoil;
+    source.vy -= normalY * push * recoil;
+    source.abilityState.bossShockwaveCooldown = def.shockwaveCooldown ?? 0.5;
 
     this.effects.push({
       type: "ring",
@@ -1412,6 +1842,82 @@ class MainScene extends Phaser.Scene {
     }
   }
 
+  drawClassEquipment(ball) {
+    const t = this.stepCounter * 0.09 + ball.id * 0.17;
+    const swing = Math.sin(t);
+    const facing = Math.atan2(ball.vy, ball.vx || 0.0001);
+    const cx = ball.x;
+    const cy = ball.y;
+
+    if (ball.classKey === "swordsman") {
+      const bladeLen = ball.r + 10;
+      const swingAngle = facing + swing * 0.55;
+      const tipX = cx + Math.cos(swingAngle) * bladeLen;
+      const tipY = cy + Math.sin(swingAngle) * bladeLen;
+      this.graphics.lineStyle(4, 0xcbd5e1, 0.95);
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(cx, cy, tipX, tipY));
+      this.graphics.lineStyle(2, 0xf97316, 0.9);
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(cx, cy, cx + Math.cos(swingAngle - 0.25) * (bladeLen - 4), cy + Math.sin(swingAngle - 0.25) * (bladeLen - 4)));
+      return;
+    }
+
+    if (ball.classKey === "archer") {
+      const bowR = Math.max(8, ball.r - 4);
+      const bx = cx + Math.cos(facing) * 2;
+      const by = cy + Math.sin(facing) * 2;
+      this.graphics.lineStyle(2, 0x22c55e, 0.95);
+      this.graphics.strokeCircle(bx, by, bowR);
+      const arrowLen = bowR + 8;
+      const ax = bx + Math.cos(facing) * arrowLen;
+      const ay = by + Math.sin(facing) * arrowLen;
+      this.graphics.lineStyle(2, 0xf8fafc, 0.95);
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(bx, by, ax, ay));
+      this.graphics.fillStyle(0xf8fafc, 0.95);
+      this.graphics.fillRect(ax - 2, ay - 2, 4, 4);
+      return;
+    }
+
+    if (ball.classKey === "tank") {
+      this.graphics.lineStyle(3, 0x93c5fd, 0.9);
+      this.graphics.strokeRect(cx - 7, cy - 7, 14, 14);
+    } else if (ball.classKey === "striker") {
+      const punchX = cx + Math.cos(facing) * (ball.r + 3);
+      const punchY = cy + Math.sin(facing) * (ball.r + 3);
+      this.graphics.fillStyle(0xfb7185, 0.95);
+      this.graphics.fillRect(punchX - 3, punchY - 3, 6, 6);
+    } else if (ball.classKey === "medic") {
+      this.graphics.fillStyle(0x86efac, 0.95);
+      this.graphics.fillRect(cx - 1, cy - 6, 2, 12);
+      this.graphics.fillRect(cx - 6, cy - 1, 12, 2);
+    } else if (ball.classKey === "trickster") {
+      this.graphics.lineStyle(2, 0xfacc15, 0.9);
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(cx - 7, cy + 6, cx + 7, cy - 6));
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(cx - 7, cy - 6, cx + 7, cy + 6));
+    } else if (ball.classKey === "sniper") {
+      this.graphics.lineStyle(2, 0xe9d5ff, 0.9);
+      this.graphics.strokeCircle(cx, cy, 6);
+      this.graphics.fillStyle(0xe9d5ff, 0.95);
+      this.graphics.fillRect(cx + 6, cy - 1, 5, 2);
+    } else if (ball.classKey === "vampire") {
+      this.graphics.fillStyle(0xfda4af, 0.9);
+      this.graphics.fillRect(cx - 4, cy + 3, 2, 4);
+      this.graphics.fillRect(cx + 2, cy + 3, 2, 4);
+    } else if (ball.classKey === "bulwark") {
+      this.graphics.lineStyle(3, 0x99f6e4, 0.85);
+      this.graphics.strokeCircle(cx, cy, ball.r - 2);
+    } else if (ball.classKey === "splitter") {
+      this.graphics.lineStyle(2, 0x5eead4, 0.9);
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(cx - 6, cy - 6, cx + 6, cy + 6));
+      this.graphics.strokeLineShape(new Phaser.Geom.Line(cx + 6, cy - 6, cx - 6, cy + 6));
+    } else if (ball.classKey === "boss") {
+      this.graphics.fillStyle(0xfbbf24, 0.95);
+      this.graphics.fillRect(cx - 7, cy - ball.r - 6, 14, 3);
+      this.graphics.fillRect(cx - 5, cy - ball.r - 9, 2, 3);
+      this.graphics.fillRect(cx - 1, cy - ball.r - 10, 2, 4);
+      this.graphics.fillRect(cx + 3, cy - ball.r - 9, 2, 3);
+    }
+  }
+
   getClassGlyph(classKey) {
     if (this.classGlyphCache.has(classKey)) {
       return this.classGlyphCache.get(classKey);
@@ -1434,6 +1940,11 @@ class MainScene extends Phaser.Scene {
       glyph.light.push([-1, -3, 2, 6]);
     } else if (classKey === "splitter") {
       glyph.dark.push([-7, -1, 14, 2], [-1, -7, 2, 14], [-5, -5, 2, 2], [3, 3, 2, 2]);
+    } else if (classKey === "swordsman") {
+      glyph.dark.push([-1, -8, 2, 16], [-5, -6, 10, 2], [-3, 6, 6, 2]);
+    } else if (classKey === "archer") {
+      glyph.dark.push([-6, -5, 2, 10], [4, -5, 2, 10], [-4, -6, 8, 2], [-4, 4, 8, 2]);
+      glyph.light.push([-1, -1, 2, 2]);
     } else if (classKey === "boss") {
       glyph.dark.push([-10, 2, 20, 3], [-8, -6, 16, 2], [-9, -9, 3, 3], [-1, -10, 2, 4], [6, -9, 3, 3]);
     }
@@ -1457,6 +1968,17 @@ class MainScene extends Phaser.Scene {
       } else if (fx.type === "ring") {
         this.graphics.lineStyle(2, fx.color, alpha);
         this.graphics.strokeCircle(fx.x, fx.y, (fx.radius ?? 10) + (1 - alpha) * 6);
+      } else if (fx.type === "slash") {
+        const sweep = (fx.radius ?? 64) * (1 - alpha * 0.5);
+        this.graphics.lineStyle(3, fx.color, alpha);
+        this.graphics.strokeCircle(fx.x, fx.y, sweep * 0.55);
+        this.graphics.lineStyle(2, fx.color, alpha * 0.85);
+        this.graphics.strokeLineShape(new Phaser.Geom.Line(fx.x - sweep * 0.8, fx.y + 2, fx.x + sweep * 0.8, fx.y - 2));
+      } else if (fx.type === "arrow") {
+        this.graphics.lineStyle(2, fx.color, alpha);
+        this.graphics.strokeLineShape(new Phaser.Geom.Line(fx.x, fx.y, fx.tx, fx.ty));
+        this.graphics.fillStyle(fx.color, alpha);
+        this.graphics.fillRect(fx.tx - 2, fx.ty - 2, 4, 4);
       } else if (fx.type === "plus") {
         this.graphics.fillStyle(fx.color, alpha);
         this.graphics.fillRect(fx.x - 1, fx.y - 4, 2, 8);
@@ -1472,6 +1994,14 @@ class MainScene extends Phaser.Scene {
       const cd = CLASS_DEFS.trickster.dashCooldown ?? 1;
       ratio = clamp((ball.abilityState.tricksterDashTimer ?? 0) / cd, 0, 1);
       color = 0xf0b429;
+    } else if (ball.classKey === "swordsman") {
+      const cd = CLASS_DEFS.swordsman.slashCooldown ?? 1;
+      ratio = clamp((ball.abilityState.swordsmanSlashCooldown ?? 0) / cd, 0, 1);
+      color = 0xfb923c;
+    } else if (ball.classKey === "archer") {
+      const cd = CLASS_DEFS.archer.shotCooldown ?? 1;
+      ratio = clamp((ball.abilityState.archerShotCooldown ?? 0) / cd, 0, 1);
+      color = 0x86efac;
     } else if (ball.classKey === "bulwark") {
       const cd = CLASS_DEFS.bulwark.shieldCooldown ?? 1;
       if ((ball.abilityState.bulwarkShieldTimeLeft ?? 0) > 0) {
@@ -1482,8 +2012,24 @@ class MainScene extends Phaser.Scene {
         color = 0x7db7ca;
       }
     } else if (ball.classKey === "boss") {
-      ratio = clamp((ball.abilityState.bossShockwaveCooldown ?? 0) / 0.5, 0, 1);
+      const def = CLASS_DEFS.boss;
+      const shockwaveRatio = clamp((ball.abilityState.bossShockwaveCooldown ?? 0) / (def.shockwaveCooldown ?? 0.5), 0, 1);
+      const roarRatio = clamp((ball.abilityState.bossRoarCooldown ?? 0) / (def.roarCooldown ?? 1.1), 0, 1);
+      const chargeRatio = clamp((ball.abilityState.bossChargeCooldown ?? 0) / (def.chargeCooldown ?? 1.7), 0, 1);
+      ratio = Math.max(shockwaveRatio, roarRatio, chargeRatio);
       color = 0xffc36b;
+    } else if (ball.mutationKey && MUTATION_DEFS[ball.mutationKey]) {
+      const mutation = MUTATION_DEFS[ball.mutationKey];
+      if (mutation.ability === "dash") {
+        ratio = clamp((ball.abilityState.mutationCooldown ?? 0) / (mutation.cooldown ?? 3.8), 0, 1);
+        color = 0xfbbf24;
+      } else if (mutation.ability === "sword") {
+        ratio = clamp((ball.abilityState.swordsmanSlashCooldown ?? 0) / (mutation.slashCooldown ?? 1.75), 0, 1);
+        color = 0xfbbf24;
+      } else if (mutation.ability === "archer") {
+        ratio = clamp((ball.abilityState.archerShotCooldown ?? 0) / (mutation.shotCooldown ?? 1.35), 0, 1);
+        color = 0xfde68a;
+      }
     }
     if (ratio == null) {
       return;
@@ -1549,6 +2095,7 @@ class MainScene extends Phaser.Scene {
     for (const ball of this.balls) {
       this.drawPixelBall(ball);
       this.drawClassArt(ball);
+      this.drawClassEquipment(ball);
 
       if (ball.classKey === "bulwark" && ball.abilityState.bulwarkShieldTimeLeft > 0) {
         this.graphics.lineStyle(2, 0xa8f0ff, 0.8);
@@ -1603,6 +2150,11 @@ class MainScene extends Phaser.Scene {
       this.winnerText.setText(winnerLabel);
       this.winnerText.setColor(this.winnerClassKey ? classColorHex(this.winnerClassKey) : "#f8fafc");
       this.winnerText.setPosition(this.setup.arenaWidth / 2, by + bannerHeight / 2);
+    } else if (!this.roundActive) {
+      this.winnerText.setVisible(true);
+      this.winnerText.setText("PRESS START ROUND");
+      this.winnerText.setColor("#cbd5e1");
+      this.winnerText.setPosition(this.setup.arenaWidth / 2, this.setup.arenaHeight / 2);
     } else {
       this.winnerText.setVisible(false);
     }
@@ -1622,9 +2174,9 @@ class MainScene extends Phaser.Scene {
       : "";
 
     this.hudText.setText(
-      `mode:${this.mode}  step:${this.stepCounter}  alive:${this.balls.length}  size:${this.setup.arenaWidth}x${this.setup.arenaHeight}${tournamentProgress}\nsetup:${setupSummary}\nalive:${aliveSummary}\nleader:${
+      `mode:${this.getModeLabel(this.mode)} (${this.mode})  step:${this.stepCounter}  alive:${this.balls.length}  size:${this.setup.arenaWidth}x${this.setup.arenaHeight}${tournamentProgress}\nsetup:${setupSummary}\nalive:${aliveSummary}\nleader:${
         CLASS_DEFS[topPrize.classKey].label
-      } ${topPrize.prize}\nfast-forward:${
+      } ${topPrize.prize}\nstate:${this.roundActive ? "running" : this.roundFinished ? "finished" : "ready"}  speed:${this.speedMultiplier}x  fast-forward:${
         this.fastForward ? "ON" : "OFF"
       }  paused:${this.paused ? "ON" : "OFF"}${
         this.roundFinished ? `\nwinner:${this.winnerClassKey ? CLASS_DEFS[this.winnerClassKey].label : "Draw"}` : ""

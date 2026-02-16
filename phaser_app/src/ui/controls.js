@@ -4,7 +4,7 @@ import { classColorHex, sanitizeCount, sanitizeDimension } from "../sim/utils.js
 const PRESETS = {
   balanced: {
     label: "Balanced",
-    counts: { tank: 4, striker: 5, medic: 3, trickster: 4, sniper: 3, vampire: 3, bulwark: 3, splitter: 3, boss: 1 }
+    counts: { tank: 4, striker: 5, medic: 3, trickster: 4, sniper: 3, vampire: 3, bulwark: 3, splitter: 3, swordsman: 4, archer: 4, boss: 1 }
   },
   chaos: {
     label: "Chaos",
@@ -17,12 +17,14 @@ const PRESETS = {
       vampire: 8,
       bulwark: 6,
       splitter: 10,
+      swordsman: 10,
+      archer: 10,
       boss: 3
     }
   },
   duel: {
     label: "Duel",
-    counts: { tank: 0, striker: 1, medic: 0, trickster: 0, sniper: 1, vampire: 0, bulwark: 0, splitter: 0, boss: 0 }
+    counts: { tank: 0, striker: 0, medic: 0, trickster: 0, sniper: 0, vampire: 0, bulwark: 0, splitter: 0, swordsman: 1, archer: 1, boss: 0 }
   }
 };
 
@@ -58,7 +60,7 @@ function addStyles() {
       top: 10px;
       right: 10px;
       z-index: 50;
-      width: 332px;
+      width: 348px;
       max-height: calc(100vh - 20px);
       overflow: auto;
       background: var(--ui-bg);
@@ -127,6 +129,34 @@ function addStyles() {
       margin-top: 8px;
       margin-bottom: 10px;
       gap: 6px;
+    }
+    #ball-controls .actions.primary {
+      grid-template-columns: 1fr 1fr;
+    }
+    #ball-controls .section {
+      margin-bottom: 10px;
+      border: 1px solid #2f4d73;
+      border-radius: 8px;
+      background: rgba(8, 18, 31, 0.78);
+      padding: 8px;
+    }
+    #ball-controls details.section > summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 12px;
+      font-weight: 700;
+      color: #9de6ff;
+      margin: -2px 0 6px;
+    }
+    #ball-controls details.section > summary::-webkit-details-marker {
+      display: none;
+    }
+    #ball-controls details.section > summary::before {
+      content: "\\25B8 ";
+      color: #f4d974;
+    }
+    #ball-controls details[open].section > summary::before {
+      content: "\\25BE ";
     }
     #ball-controls button {
       border: 0;
@@ -274,21 +304,33 @@ function addStyles() {
       resize: vertical;
       min-height: 54px;
     }
+    @media (max-width: 980px) {
+      #ball-controls {
+        right: 8px;
+        left: 8px;
+        top: 8px;
+        width: auto;
+        max-height: calc(100vh - 16px);
+      }
+    }
   `;
   document.head.appendChild(styleTag);
 }
 
 function createStatusHtml(scene) {
-  const modeLabel = scene.mode.charAt(0).toUpperCase() + scene.mode.slice(1);
+  const modeLabel = scene.getModeLabel ? scene.getModeLabel(scene.mode) : scene.mode.charAt(0).toUpperCase() + scene.mode.slice(1);
+  const totalSetup = CLASS_KEYS.reduce((sum, classKey) => sum + (scene.setup.classCounts[classKey] ?? 0), 0);
+  if (totalSetup === 0) {
+    return `[${modeLabel}] <strong style="color:var(--ui-danger)">No balls configured.</strong> Set class counts and click Save Setup.`;
+  }
+  if (!scene.roundActive && !scene.roundFinished) {
+    return `[${modeLabel}] Ready (${totalSetup} configured). Click <strong>Start Round</strong>.`;
+  }
   if (scene.roundFinished) {
     if (scene.winnerClassKey) {
       return `[${modeLabel}] Winner: <strong style="color:${classColorHex(scene.winnerClassKey)}">${CLASS_DEFS[scene.winnerClassKey].label}</strong> (${scene.balls.length} left)`;
     }
     return `[${modeLabel}] <strong>Draw:</strong> no surviving balls`;
-  }
-  const totalSetup = CLASS_KEYS.reduce((sum, classKey) => sum + (scene.setup.classCounts[classKey] ?? 0), 0);
-  if (totalSetup === 0) {
-    return `[${modeLabel}] <strong style="color:var(--ui-danger)">No balls configured.</strong> Set class counts and click Apply Setup + Reset.`;
   }
   return `[${modeLabel}] Round running... alive ${scene.balls.length}`;
 }
@@ -391,105 +433,126 @@ export function buildControls(scene) {
 
   root.innerHTML = `
     <h2>Bouncing Balls Arena</h2>
-    <div class="intro">Class-based auto-battler sandbox. Each class can be set to 0. Finish rounds, drag survivors into the next-round box, and chain matches.</div>
+    <div class="intro">Set your classes and press Start Round. Winners get deterministic auto-rewards each round.</div>
     <div id="roundStatus" class="status">Round running...</div>
-    <div class="row">
-      <label for="modeSelect">Mode</label>
-      <select id="modeSelect">
-        <option value="classic">Classic</option>
-        <option value="blitz">Blitz</option>
-        <option value="tournament">Tournament</option>
-      </select>
+    <div class="actions primary">
+      <button id="startRoundBtn" type="button">Start Round</button>
+      <button id="resetRoundBtn" type="button">Prepare Round</button>
     </div>
-    <div class="row">
-      <label for="arenaSelect">Arena</label>
-      <select id="arenaSelect">
-        <option value="standard">Standard</option>
-        <option value="crossfire">Crossfire</option>
-        <option value="sanctum">Sanctum</option>
-        <option value="gauntlet">Gauntlet</option>
-      </select>
+    <div class="section">
+      <div class="row">
+        <label for="modeSelect">Mode</label>
+        <select id="modeSelect">
+          <option value="classic">Sandbox (Bug Fix)</option>
+          <option value="blitz">Stress Test (Fast)</option>
+          <option value="tournament">Bracket Test (Series)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="arenaSelect">Arena</label>
+        <select id="arenaSelect">
+          <option value="standard">Standard</option>
+          <option value="crossfire">Crossfire</option>
+          <option value="sanctum">Sanctum</option>
+          <option value="gauntlet">Gauntlet</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="modifierSelect">Modifier</label>
+        <select id="modifierSelect">
+          <option value="none">None</option>
+          <option value="iron_wall">Iron Wall</option>
+          <option value="glass_cannon">Glass Cannon</option>
+          <option value="turbo">Turbo</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="speedSelect">Sim Speed</label>
+        <select id="speedSelect">
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="arenaWidth">Arena Width</label>
+        <input id="arenaWidth" type="number" min="420" max="2200" />
+      </div>
+      <div class="row">
+        <label for="arenaHeight">Arena Height</label>
+        <input id="arenaHeight" type="number" min="420" max="2200" />
+      </div>
+      <div class="preset-row">
+        <button id="presetBalanced" type="button">Balanced</button>
+        <button id="presetChaos" type="button">Chaos</button>
+        <button id="presetDuel" type="button">Duel</button>
+      </div>
+      <div class="actions">
+        <button id="applySetupBtn" type="button">Save Setup</button>
+      </div>
     </div>
-    <div class="row">
-      <label for="modifierSelect">Modifier</label>
-      <select id="modifierSelect">
-        <option value="none">None</option>
-        <option value="iron_wall">Iron Wall</option>
-        <option value="glass_cannon">Glass Cannon</option>
-        <option value="turbo">Turbo</option>
-      </select>
-    </div>
-    <div class="row">
-      <label for="arenaWidth">Arena Width</label>
-      <input id="arenaWidth" type="number" min="420" max="2200" />
-    </div>
-    <div class="row">
-      <label for="arenaHeight">Arena Height</label>
-      <input id="arenaHeight" type="number" min="420" max="2200" />
-    </div>
-    ${classRows}
-    <div class="preset-row">
-      <button id="presetBalanced" type="button">Balanced</button>
-      <button id="presetChaos" type="button">Chaos</button>
-      <button id="presetDuel" type="button">Duel</button>
-    </div>
-    <div class="actions">
-      <button id="applySetupBtn" type="button">Apply Setup + Reset</button>
-      <button id="resetRoundBtn" type="button">Reset Round</button>
-      <button id="startTournamentBtn" type="button">Start Tournament</button>
-      <button id="startTeamTournamentBtn" type="button">Start Team Tournament</button>
-      <button id="stopTournamentBtn" type="button">Stop Tournament</button>
-    </div>
-    <div class="subsection">Tournament</div>
-    <div id="tournamentStatus" class="panel">Tournament inactive.</div>
-    <div class="subsection">Prize Board</div>
-    <div id="prizeBoard" class="panel">No prizes awarded yet.</div>
-    <div class="subsection">Upgrades</div>
-    <div class="row">
-      <label for="upgradeClass">Upgrade Class</label>
-      <select id="upgradeClass">
-        ${CLASS_KEYS.map((classKey) => `<option value="${classKey}">${CLASS_DEFS[classKey].label}</option>`).join("")}
-      </select>
-    </div>
-    <div class="panel" id="upgradeSummary">Select class to view upgrades.</div>
-    <div class="actions">
-      <button id="buyHpBtn" type="button">Buy HP Upgrade</button>
-      <button id="buySpeedBtn" type="button">Buy Speed Upgrade</button>
-      <button id="buyMasteryBtn" type="button">Buy Mastery Upgrade</button>
-    </div>
-    <div class="subsection">Round Survivors (drag)</div>
-    <div id="survivorPool" class="drop-zone"></div>
-    <div class="subsection">Next Round Box (drop here)</div>
-    <div id="nextRoundBox" class="drop-zone"></div>
-    <div class="actions">
-      <button id="useNextRoundBtn" type="button">Use Box For Next Round</button>
-    </div>
-    <div class="subsection">Share Setup Link</div>
-    <div class="link-row">
-      <input id="shareLinkOut" type="text" readonly />
-      <button id="copyLinkBtn" class="mini" type="button">Copy</button>
-    </div>
-    <div class="actions">
-      <button id="generateLinkBtn" type="button">Generate Link</button>
-    </div>
-    <div class="subsection">Replay</div>
-    <textarea id="replayOut" readonly></textarea>
-    <div class="actions">
-      <button id="exportReplayBtn" type="button">Export Replay Token</button>
-    </div>
-    <textarea id="replayIn" placeholder="Paste replay token here"></textarea>
-    <div class="actions">
-      <button id="importReplayBtn" type="button">Import Replay Token</button>
-    </div>
-    <div class="subsection">Combat Log</div>
-    <div id="combatLog" class="panel">No combat events yet.</div>
-    <div class="subsection">Achievements</div>
-    <div id="achievements" class="panel">No achievements yet.</div>
-    <div class="desc-title">Class Descriptions</div>
-    ${descRows}
-    <div class="hint">Controls: R reset | F fast-forward | P pause</div>
-    <div class="hint">Deterministic sim: same setup + mode always gives the same result.</div>
-    <div class="hint">Flow: finish a round, drag survivor chips into Next Round Box, then click Use Box For Next Round.</div>
+    <details class="section" open>
+      <summary>Class Counts</summary>
+      ${classRows}
+    </details>
+    <details class="section">
+      <summary>Tournament</summary>
+      <div class="actions">
+        <button id="startTournamentBtn" type="button">Start Tournament</button>
+        <button id="startTeamTournamentBtn" type="button">Start Team Tournament</button>
+        <button id="stopTournamentBtn" type="button">Stop Tournament</button>
+      </div>
+      <div id="tournamentStatus" class="panel">Tournament inactive.</div>
+    </details>
+    <details class="section" open>
+      <summary>Progress</summary>
+      <div class="subsection">Prize Board</div>
+      <div id="prizeBoard" class="panel">No prizes awarded yet.</div>
+      <div class="subsection">Round Survivors (drag)</div>
+      <div id="survivorPool" class="drop-zone"></div>
+      <div class="subsection">Next Round Box (drop here)</div>
+      <div id="nextRoundBox" class="drop-zone"></div>
+      <div class="actions">
+        <button id="useNextRoundBtn" type="button">Use Box For Next Round</button>
+      </div>
+    </details>
+    <details class="section" open>
+      <summary>Round Reward</summary>
+      <div id="rewardSummary" class="panel">Win a round to trigger a deterministic auto-reward.</div>
+      <div id="rewardChoices" class="actions"></div>
+    </details>
+    <details class="section">
+      <summary>Share + Replay</summary>
+      <div class="subsection">Share Setup Link</div>
+      <div class="link-row">
+        <input id="shareLinkOut" type="text" readonly />
+        <button id="copyLinkBtn" class="mini" type="button">Copy</button>
+      </div>
+      <div class="actions">
+        <button id="generateLinkBtn" type="button">Generate Link</button>
+      </div>
+      <div class="subsection">Replay</div>
+      <textarea id="replayOut" readonly></textarea>
+      <div class="actions">
+        <button id="exportReplayBtn" type="button">Export Replay Token</button>
+      </div>
+      <textarea id="replayIn" placeholder="Paste replay token here"></textarea>
+      <div class="actions">
+        <button id="importReplayBtn" type="button">Import Replay Token</button>
+      </div>
+    </details>
+    <details class="section">
+      <summary>Combat + Class Info</summary>
+      <div class="subsection">Combat Log</div>
+      <div id="combatLog" class="panel">No combat events yet.</div>
+      <div class="subsection">Achievements</div>
+      <div id="achievements" class="panel">No achievements yet.</div>
+      <div class="desc-title">Class Descriptions</div>
+      ${descRows}
+    </details>
+    <div class="hint">Controls: S start | R prepare | F fast-forward | P pause | [ slower | ] faster</div>
+    <div class="hint">Modes: Sandbox for debugging, Stress Test for fast break checks, Bracket Test for repeated match validation.</div>
+    <div class="hint">Flow: Save Setup -> Start Round -> reward auto-applies on win.</div>
   `;
 
   const arenaWidthEl = root.querySelector("#arenaWidth");
@@ -497,11 +560,12 @@ export function buildControls(scene) {
   const modeSelectEl = root.querySelector("#modeSelect");
   const arenaSelectEl = root.querySelector("#arenaSelect");
   const modifierSelectEl = root.querySelector("#modifierSelect");
+  const speedSelectEl = root.querySelector("#speedSelect");
   const roundStatusEl = root.querySelector("#roundStatus");
   const tournamentStatusEl = root.querySelector("#tournamentStatus");
   const prizeBoardEl = root.querySelector("#prizeBoard");
-  const upgradeClassEl = root.querySelector("#upgradeClass");
-  const upgradeSummaryEl = root.querySelector("#upgradeSummary");
+  const rewardSummaryEl = root.querySelector("#rewardSummary");
+  const rewardChoicesEl = root.querySelector("#rewardChoices");
   const combatLogEl = root.querySelector("#combatLog");
   const achievementsEl = root.querySelector("#achievements");
   const survivorPoolEl = root.querySelector("#survivorPool");
@@ -510,13 +574,11 @@ export function buildControls(scene) {
   const replayOutEl = root.querySelector("#replayOut");
   const replayInEl = root.querySelector("#replayIn");
   const applyBtn = root.querySelector("#applySetupBtn");
+  const startRoundBtn = root.querySelector("#startRoundBtn");
   const resetRoundBtn = root.querySelector("#resetRoundBtn");
   const startTournamentBtn = root.querySelector("#startTournamentBtn");
   const startTeamTournamentBtn = root.querySelector("#startTeamTournamentBtn");
   const stopTournamentBtn = root.querySelector("#stopTournamentBtn");
-  const buyHpBtn = root.querySelector("#buyHpBtn");
-  const buySpeedBtn = root.querySelector("#buySpeedBtn");
-  const buyMasteryBtn = root.querySelector("#buyMasteryBtn");
   const useNextRoundBtn = root.querySelector("#useNextRoundBtn");
   const generateLinkBtn = root.querySelector("#generateLinkBtn");
   const exportReplayBtn = root.querySelector("#exportReplayBtn");
@@ -534,11 +596,12 @@ export function buildControls(scene) {
     modeSelectEl,
     arenaSelectEl,
     modifierSelectEl,
+    speedSelectEl,
     roundStatusEl,
     tournamentStatusEl,
     prizeBoardEl,
-    upgradeClassEl,
-    upgradeSummaryEl,
+    rewardSummaryEl,
+    rewardChoicesEl,
     combatLogEl,
     achievementsEl,
     survivorPoolEl,
@@ -558,7 +621,7 @@ export function buildControls(scene) {
   modeSelectEl.value = scene.mode;
   arenaSelectEl.value = scene.arenaMode;
   modifierSelectEl.value = scene.activeModifier;
-  upgradeClassEl.value = CLASS_KEYS[0];
+  speedSelectEl.value = String(scene.speedMultiplier ?? 1);
 
   const applyPreset = (presetKey) => {
     const preset = PRESETS[presetKey];
@@ -576,7 +639,7 @@ export function buildControls(scene) {
   presetChaosBtn.addEventListener("click", () => applyPreset("chaos"));
   presetDuelBtn.addEventListener("click", () => applyPreset("duel"));
 
-  applyBtn.addEventListener("click", () => {
+  const applyCurrentFormSetup = () => {
     const nextClassCounts = {};
     for (const input of countInputs) {
       nextClassCounts[input.dataset.classKey] = sanitizeCount(input.value);
@@ -586,6 +649,16 @@ export function buildControls(scene) {
       arenaHeight: sanitizeDimension(arenaHeightEl.value, scene.setup.arenaHeight),
       classCounts: nextClassCounts
     });
+  };
+
+  applyBtn.addEventListener("click", () => {
+    applyCurrentFormSetup();
+    scene.syncControlInputs();
+  });
+
+  startRoundBtn.addEventListener("click", () => {
+    applyCurrentFormSetup();
+    scene.startRound();
     scene.syncControlInputs();
   });
 
@@ -601,6 +674,10 @@ export function buildControls(scene) {
     scene.setModifier(modifierSelectEl.value);
     scene.syncControlInputs();
   });
+  speedSelectEl.addEventListener("change", () => {
+    scene.setSpeedMultiplier(speedSelectEl.value);
+    scene.syncControlInputs();
+  });
 
   resetRoundBtn.addEventListener("click", () => {
     scene.resetSimulation();
@@ -608,10 +685,12 @@ export function buildControls(scene) {
   });
 
   startTournamentBtn.addEventListener("click", () => {
+    applyCurrentFormSetup();
     scene.startTournament(false);
     scene.syncControlInputs();
   });
   startTeamTournamentBtn.addEventListener("click", () => {
+    applyCurrentFormSetup();
     scene.startTournament(true);
     scene.syncControlInputs();
   });
@@ -624,17 +703,6 @@ export function buildControls(scene) {
   useNextRoundBtn.addEventListener("click", () => {
     scene.applyNextRoundBox();
     scene.syncControlInputs();
-  });
-
-  const buyUpgradeForSelection = (upgradeKey) => {
-    scene.buyUpgrade(upgradeClassEl.value, upgradeKey);
-    scene.syncControlInputs();
-  };
-  buyHpBtn.addEventListener("click", () => buyUpgradeForSelection("hp"));
-  buySpeedBtn.addEventListener("click", () => buyUpgradeForSelection("speed"));
-  buyMasteryBtn.addEventListener("click", () => buyUpgradeForSelection("mastery"));
-  upgradeClassEl.addEventListener("change", () => {
-    scene.updateRoundPanels();
   });
 
   generateLinkBtn.addEventListener("click", () => {

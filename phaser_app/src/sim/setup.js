@@ -23,7 +23,13 @@ export function createBall(id, classKey, x, y, vx, vy) {
       bulwarkShieldTimeLeft: 0,
       splitDepth: 0,
       splitCooldownLeft: 0,
-      bossShockwaveCooldown: 0
+      swordsmanSlashCooldown: def.slashCooldown ?? 0,
+      archerShotCooldown: def.shotCooldown ?? 0,
+      mutationCooldown: 0,
+      bossShockwaveCooldown: 0,
+      bossRoarCooldown: def.roarCooldown ?? 0,
+      bossChargeCooldown: def.chargeCooldown ?? 0,
+      bossEnraged: false
     }
   };
 }
